@@ -1,2 +1,2 @@
 # SNN
-SNN test
+SNNベースAIチャットシステム設計書

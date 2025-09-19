@@ -1,0 +1,23 @@
+{
+  "_comment": "SNN model training data in JSON format",
+  "source": "manual_creation_for_snn_project",
+  "version": "1.0",
+  "corpus": [
+    "hello world",
+    "how are you today",
+    "the sky is blue",
+    "tokyo is the capital of japan",
+    "spiking neural networks are inspired by the brain",
+    "this project aims to build an energy efficient ai system",
+    "what is your name",
+    "can you help me with this problem",
+    "i think this is a great idea",
+    "let's start the process now",
+    "this was a fantastic experience",
+    "i did not enjoy the show at all",
+    "the weather is sunny and warm",
+    "learning new things is always exciting",
+    "the quick brown fox jumps over the lazy dog",
+    "a journey of a thousand miles begins with a single step"
+  ]
+}

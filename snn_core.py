@@ -5,180 +5,205 @@
 # - snn_breakthrough.py
 # - advanced_snn_chat.py
 # - train_text_snn.py
-# のうち、最も先進的な機能を統合・整理
+# のうち、最も先進的な機能を統合・整理し、さらに洗練させたバージョン
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 from spikingjelly.activation_based import neuron, surrogate, functional
-import math
-from typing import List, Tuple, Optional, Dict, Any
-import time
+from typing import Tuple
 
 # ----------------------------------------
-# 1. 次世代スパイキングニューロンモデル
+# 1. 高度なスパイクエンコーダー
 # ----------------------------------------
-
-class MultiThresholdLIF(nn.Module):
-    """複数閾値を持つ適応的LIFニューロン"""
-    def __init__(self, features: int, num_thresholds: int = 3, tau: float = 2.0):
-        super().__init__()
-        self.features = features
-        self.num_thresholds = num_thresholds
-        self.tau = nn.Parameter(torch.full((features,), tau))
-        self.thresholds = nn.Parameter(torch.linspace(0.5, 1.5, num_thresholds).unsqueeze(0).repeat(features, 1))
-        self.reset_values = nn.Parameter(torch.zeros(features, num_thresholds))
-        self.register_buffer('v_mem', torch.zeros(1, features))
-        self.register_buffer('adaptation', torch.zeros(1, features))
-        self.surrogate_function = surrogate.ATan(alpha=2.0)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size = x.shape[0]
-        if self.v_mem.shape[0] != batch_size:
-            self.v_mem = self.v_mem.expand(batch_size, -1).contiguous()
-            self.adaptation = self.adaptation.expand(batch_size, -1).contiguous()
-        
-        decay = torch.exp(-1.0 / torch.clamp(self.tau, min=0.1))
-        self.v_mem = self.v_mem * decay + x - self.adaptation * 0.1
-        
-        spikes = torch.zeros_like(x)
-        for i in range(self.num_thresholds):
-            threshold = self.thresholds[:, i].unsqueeze(0)
-            spike_mask = self.surrogate_function(self.v_mem - threshold)
-            spikes += spike_mask * (i + 1)
-            reset_mask = (spike_mask > 0.5).float()
-            self.v_mem = self.v_mem * (1 - reset_mask) + self.reset_values[:, i].unsqueeze(0) * reset_mask
-        
-        self.adaptation = self.adaptation * 0.95 + (spikes > 0).float() * 0.05
-        return spikes / self.num_thresholds
-
-# ----------------------------------------
-# 2. 高性能スパイクエンコーディング
-# ----------------------------------------
-
-class AdvancedSpikeEncoder(nn.Module):
-    """レート、時間、集団、位相など複数の手法を組み合わせた最先端スパイクエンコーダー"""
-    def __init__(self, d_model: int, time_steps: int):
-        super().__init__()
-        self.d_model = d_model
-        self.time_steps = time_steps
-        self.encoding_methods = nn.ModuleDict({
-            'rate': RateEncoder(d_model, time_steps),
-            'temporal': TemporalEncoder(d_model, time_steps),
-        })
-        self.encoding_weights = nn.Parameter(torch.ones(len(self.encoding_methods)) / len(self.encoding_methods))
-
-    def encode_sequence(self, embeddings: torch.Tensor) -> torch.Tensor:
-        weights = F.softmax(self.encoding_weights, dim=0)
-        final_encoding = torch.zeros(embeddings.shape[0], self.time_steps, embeddings.shape[1], self.d_model, device=embeddings.device)
-        for i, (_, encoder) in enumerate(self.encoding_methods.items()):
-            final_encoding += weights[i] * encoder(embeddings)
-        return final_encoding
-
-class RateEncoder(nn.Module):
-    def __init__(self, d_model: int, time_steps: int):
-        super().__init__()
-        self.time_steps = time_steps
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        firing_rates = torch.sigmoid(x)
-        random_vals = torch.rand(x.shape[0], self.time_steps, x.shape[1], x.shape[2], device=x.device)
-        return (random_vals < firing_rates.unsqueeze(1)).float()
 
 class TemporalEncoder(nn.Module):
-    def __init__(self, d_model: int, time_steps: int):
+    """
+    埋め込みベクトルを時間的なスパイクパターンに変換するエンコーダー。
+    ベクトルの各要素値をスパイクの発火タイミングにマッピングします。
+    """
+    def __init__(self, time_steps: int):
         super().__init__()
         self.time_steps = time_steps
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x (torch.Tensor): 埋め込みベクトル。形状は (batch_size, seq_len, d_model)。
+        Returns:
+            torch.Tensor: スパイク列。形状は (batch_size, time_steps, seq_len, d_model)。
+        """
+        # ベクトル値をシグモイド関数で 0-1 の範囲に正規化し、発火タイミングを決定
         spike_times = (torch.sigmoid(x) * (self.time_steps - 1)).long()
+        
+        # (batch_size, seq_len, d_model) -> (batch_size, 1, seq_len, d_model)
+        spike_times = spike_times.unsqueeze(1)
+
+        # 出力用のスパイク列テンソルを初期化
         spikes = torch.zeros(x.shape[0], self.time_steps, x.shape[1], x.shape[2], device=x.device)
-        spikes.scatter_(1, spike_times.unsqueeze(1), 1.0)
+        
+        # scatter_ を使って、計算された発火タイミングの位置にスパイク (1.0) を配置
+        # これにより、各ニューロンが指定されたタイムステップで一度だけ発火するパターンが生成される
+        spikes.scatter_(1, spike_times, 1.0)
+        
         return spikes
 
 # ----------------------------------------
-# 3. Spiking State Space Model (革新的アーキテクチャ)
+# 2. Spiking State Space Model (革新的アーキテクチャ)
 # ----------------------------------------
 
 class SpikingSSMLayer(nn.Module):
-    """スパイキング状態空間モデル - 線形計算量で長期依存関係を処理"""
-    def __init__(self, d_model: int, d_state: int = 64):
+    """
+    スパイキング状態空間モデル。線形計算量で長期依存関係を効率的に処理します。
+    LIFニューロンを組み込み、状態遷移をスパイクベースで行います。
+    """
+    def __init__(self, d_model: int, d_state: int = 64, dt: float = 0.1):
         super().__init__()
         self.d_model = d_model
         self.d_state = d_state
-        self.A = nn.Parameter(torch.randn(d_state))
+        self.dt = dt
+
+        # 状態遷移行列 A, B, C とバイアス項 D を定義
+        # A: 状態h_tを次の状態h_{t+1}にどう遷移させるかを決定
+        # B: 入力x_tが状態h_tにどう影響するかを決定
+        # C: 状態h_tが出力y_tにどう影響するかを決定
+        # D: 入力x_tが出力y_tに直接どう影響するかを決定 (スキップ接続)
+        self.A = nn.Parameter(torch.randn(d_state, d_state))
         self.B = nn.Parameter(torch.randn(d_state, d_model))
         self.C = nn.Parameter(torch.randn(d_model, d_state))
         self.D = nn.Parameter(torch.randn(d_model))
-        self.input_lif = MultiThresholdLIF(d_model)
-        self.output_lif = MultiThresholdLIF(d_model)
-        self.register_buffer('h_state', torch.zeros(1, d_state))
+        
+        # 状態更新と出力計算のためのLIFニューロン
+        self.state_lif = neuron.LIFNode(tau=2.0, surrogate_function=surrogate.ATan())
+        self.output_lif = neuron.LIFNode(tau=2.0, surrogate_function=surrogate.ATan())
+        
+        # 内部状態を保持するバッファ
+        self.register_buffer('h_state', torch.zeros(1, 1, d_state))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x (torch.Tensor): 入力スパイク列。形状は (batch_size, time_steps, seq_len, d_model)。
+        Returns:
+            torch.Tensor: 出力スパイク列。形状は (batch_size, time_steps, seq_len, d_model)。
+        """
         batch_size, time_steps, seq_len, _ = x.shape
-        outputs = []
-        if self.h_state.shape[0] != batch_size * seq_len:
-            self.h_state = self.h_state.expand(batch_size * seq_len, -1).contiguous()
+        
+        # バッチサイズとシーケンス長に合わせて内部状態の形状を調整
+        if self.h_state.shape[0] != batch_size or self.h_state.shape[1] != seq_len:
+            self.h_state = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
 
+        outputs = []
         for t in range(time_steps):
-            x_t = x[:, t, :, :].reshape(-1, self.d_model)
-            x_spike = self.input_lif(x_t)
+            x_t = x[:, t, :, :]  # (batch_size, seq_len, d_model)
             
-            # 状態更新
-            dt = 0.1 # 固定時間ステップ
-            discretized_A = torch.exp(dt * self.A)
-            self.h_state = discretized_A * self.h_state + dt * torch.matmul(x_spike, self.B.T)
+            # 状態更新: h_t = A * h_{t-1} + B * x_t
+            # h_state: (batch_size, seq_len, d_state)
+            # x_t: (batch_size, seq_len, d_model)
+            state_update = F.linear(self.h_state, self.A) + F.linear(x_t, self.B.T)
+            self.h_state = self.state_lif(state_update)
             
-            # 出力計算
-            y_t = torch.matmul(self.h_state, self.C.T) + self.D * x_spike
-            out_spike = self.output_lif(y_t)
-            outputs.append(out_spike.reshape(batch_size, seq_len, self.d_model))
+            # 出力計算: y_t = C * h_t + D * x_t
+            output_update = F.linear(self.h_state, self.C.T) + F.linear(x_t, self.D)
+            out_spike = self.output_lif(output_update)
+            
+            outputs.append(out_spike)
 
         return torch.stack(outputs, dim=1)
 
 
 # ----------------------------------------
-# 4. 統合された次世代SNNアーキテクチャ
+# 3. 統合された次世代SNNアーキテクチャ
 # ----------------------------------------
 
 class BreakthroughSNN(nn.Module):
-    """ANNを超越することを目指した革新的SNNアーキテクチャ"""
+    """
+    Spiking-SSMを中核に据えた、次世代のSNNアーキテクチャ。
+    ANNを超える性能と効率を目指します。
+    """
     def __init__(self, vocab_size: int, d_model: int = 256, d_state: int = 64, num_layers: int = 4, time_steps: int = 20):
         super().__init__()
-        self.d_model = d_model
         self.time_steps = time_steps
-        self.vocab_size = vocab_size
+        
+        # 1. 単語IDをベクトルに変換する埋め込み層
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.spike_encoder = AdvancedSpikeEncoder(d_model, time_steps)
+        
+        # 2. 埋め込みベクトルをスパイク列に変換するエンコーダー
+        self.spike_encoder = TemporalEncoder(time_steps)
+        
+        # 3. Spiking-SSM層を複数重ねて、文脈の深い理解を可能にする
         self.layers = nn.ModuleList([SpikingSSMLayer(d_model, d_state) for _ in range(num_layers)])
+        
+        # 4. SNNからの出力（スパイク）を次の単語の予測確率（ロジット）に変換
         self.output_projection = nn.Linear(d_model, vocab_size)
 
-    def forward(self, input_ids: torch.Tensor, return_spikes: bool = False):
+    def forward(self, input_ids: torch.Tensor, return_spikes: bool = False) -> Tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
+        # (batch, seq_len) -> (batch, seq_len, d_model)
         token_emb = self.token_embedding(input_ids)
-        spike_sequence = self.spike_encoder.encode_sequence(token_emb)
+        
+        # (batch, seq_len, d_model) -> (batch, time, seq_len, d_model)
+        spike_sequence = self.spike_encoder(token_emb)
         
         hidden_states = spike_sequence
         for layer in self.layers:
             hidden_states = layer(hidden_states)
         
+        # 時間次元でスパイクを平均化し、情報を集約
+        # (batch, time, seq_len, d_model) -> (batch, seq_len, d_model)
         time_integrated = hidden_states.mean(dim=1)
+        
+        # 次の単語の確率分布を計算
+        # (batch, seq_len, d_model) -> (batch, seq_len, vocab_size)
         logits = self.output_projection(time_integrated)
         
         return (logits, hidden_states) if return_spikes else logits
 
 # ----------------------------------------
-# 5. 統合トレーニングシステム
+# 4. 統合トレーニングシステム
 # ----------------------------------------
+
+class CombinedLoss(nn.Module):
+    """
+    クロスエントロピー損失とスパイク発火率の正則化を組み合わせた損失関数。
+    モデルの精度向上と、エネルギー効率（低発火率）の維持を両立させます。
+    """
+    def __init__(self, ce_weight: float = 1.0, spike_reg_weight: float = 0.01, target_spike_rate: float = 0.02):
+        super().__init__()
+        self.ce_loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
+        self.weights = {'ce': ce_weight, 'spike_reg': spike_reg_weight}
+        self.target_spike_rate = target_spike_rate
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor) -> dict:
+        # 1. クロスエントロピー損失（精度向上）
+        # logits: (batch, seq_len, vocab_size) -> (batch * seq_len, vocab_size)
+        # targets: (batch, seq_len) -> (batch * seq_len)
+        ce_loss = self.ce_loss_fn(logits.view(-1, logits.size(-1)), targets.view(-1))
+        
+        # 2. スパイク正則化損失（省エネ化）
+        spike_rate = spikes.mean()
+        # 発火率が目標値から離れるほどペナルティを与える
+        spike_reg_loss = F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spike_rate.device))
+        
+        # 3. 2つの損失を重み付けして合計
+        total_loss = self.weights['ce'] * ce_loss + self.weights['spike_reg'] * spike_reg_loss
+        
+        return {
+            'total': total_loss,
+            'ce_loss': ce_loss,
+            'spike_reg_loss': spike_reg_loss,
+            'spike_rate': spike_rate
+        }
 
 class BreakthroughTrainer:
     """革新的SNNの訓練システム"""
-    def __init__(self, model: BreakthroughSNN, device: str = "cuda"):
+    def __init__(self, model: BreakthroughSNN, device: str = "cuda" if torch.cuda.is_available() else "cpu"):
         self.model = model.to(device)
         self.device = device
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-4)
-        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=2e-4, total_steps=10000)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=5e-4)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=10000)
         self.criterion = CombinedLoss()
 
-    def train_step(self, input_ids: torch.Tensor, target_ids: torch.Tensor):
+    def train_step(self, input_ids: torch.Tensor, target_ids: torch.Tensor) -> dict:
         self.model.train()
         input_ids, target_ids = input_ids.to(self.device), target_ids.to(self.device)
         
@@ -194,19 +219,3 @@ class BreakthroughTrainer:
         self.scheduler.step()
         
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
-
-class CombinedLoss(nn.Module):
-    """クロスエントロピーとスパイク正則化を組み合わせた損失"""
-    def __init__(self):
-        super().__init__()
-        self.ce_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
-        self.weights = {'ce': 1.0, 'spike_reg': 0.01}
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor):
-        ce_loss = self.ce_loss(logits.view(-1, logits.size(-1)), targets.view(-1))
-        spike_rate = spikes.mean()
-        target_spike_rate = 0.1
-        spike_reg = torch.abs(spike_rate - target_spike_rate)
-        total_loss = self.weights['ce'] * ce_loss + self.weights['spike_reg'] * spike_reg
-        
-        return {'total': total_loss, 'ce': ce_loss, 'spike_reg': spike_reg, 'spike_rate': spike_rate}

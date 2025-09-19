@@ -99,18 +99,24 @@ class SpikingSSMLayer(nn.Module):
         if self.h_state.shape[0] != batch_size or self.h_state.shape[1] != seq_len:
             self.h_state = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
 
+        # 前のバッチの計算グラフから状態を切り離す (これがエラーを解決します)
+        self.h_state = self.h_state.detach()
+
         outputs = []
         for t in range(time_steps):
             x_t = x[:, t, :, :]  # (batch_size, seq_len, d_model)
             
             # 状態更新: h_t = A * h_{t-1} + B * x_t
-            # h_state: (batch_size, seq_len, d_state)
-            # x_t: (batch_size, seq_len, d_model)
-            state_update = F.linear(self.h_state, self.A) + F.linear(x_t, self.B.T)
+            # ( ... existing code ... )
+            state_transition = F.linear(self.h_state, self.A)
+            input_projection = F.linear(x_t, self.B)
+            state_update = state_transition + input_projection
             self.h_state = self.state_lif(state_update)
             
-            # 出力計算: y_t = C * h_t + D * x_t
-            output_update = F.linear(self.h_state, self.C.T) + F.linear(x_t, self.D)
+            # 出力計算: y_t = C * h_t + x_t + D_bias (残差接続を追加)
+            # ( ... existing code ... )
+            output_projection = F.linear(self.h_state, self.C)
+            output_update = output_projection + x_t + self.D
             out_spike = self.output_lif(output_update)
             
             outputs.append(out_spike)

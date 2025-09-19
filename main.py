@@ -7,6 +7,10 @@
 # - snn_breakthrough.py (実行ブロック)
 # を統合し、snn_core.pyのコンポーネントを使用するように変更。
 # 学習タスクを「次トークン予測」に修正し、より高度なモデルに対応。
+#
+# 改善点:
+# - argparseを導入し、コマンドラインから外部データファイル(JSON/TXT)を読み込めるように修正。
+# - 汎用化されたBreakthroughTrainerに対応。
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -15,13 +19,54 @@ import itertools
 from typing import List, Tuple
 import os
 import random
+import argparse
+import json
 
 # snn_coreから主要コンポーネントをインポート
-from snn_core import BreakthroughSNN, BreakthroughTrainer
+from snn_core import BreakthroughSNN, BreakthroughTrainer, CombinedLoss
 
 # ----------------------------------------
 # 1. データ準備と語彙の構築
 # ----------------------------------------
+
+def load_data_from_file(file_path: str, json_key: str = None) -> List[str]:
+    """
+    外部のJSONまたはTXTファイルからテキストデータを読み込みます。
+
+    Args:
+        file_path (str): データファイルのパス。
+        json_key (str, optional): JSONファイルの場合、テキストリストが格納されているキー。
+
+    Returns:
+        List[str]: テキストデータのリスト。
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"データファイルが見つかりません: {file_path}")
+
+    _, ext = os.path.splitext(file_path)
+    
+    if ext == '.json':
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        if json_key:
+            if json_key not in data:
+                raise KeyError(f"指定されたキー '{json_key}' がJSONファイル内に見つかりません。")
+            texts = data[json_key]
+        else:
+            # キーが指定されない場合、JSONデータ自体がリストであることを期待
+            texts = data
+        
+        if not isinstance(texts, list) or not all(isinstance(t, str) for t in texts):
+            raise TypeError("JSONから抽出されたデータは、文字列のリストである必要があります。")
+        return texts
+
+    elif ext == '.txt':
+        with open(file_path, 'r', encoding='utf-8') as f:
+            # 空行を除外して読み込む
+            return [line.strip() for line in f if line.strip()]
+    else:
+        raise ValueError(f"サポートされていないファイル形式です: {ext} (.json または .txt を使用してください)")
 
 class Vocabulary:
     """テキストとIDを相互変換するための語彙クラス"""
@@ -142,39 +187,42 @@ class SNNInferenceEngine:
 # 3. 実行ブロック
 # ----------------------------------------
 
-def train():
+def train(args):
     """モデルの学習を実行"""
     print("🚀 革新的SNNシステムの訓練開始 (次トークン予測タスク)")
     
-    # サンプルデータ（多様な文構造）
-    TRAIN_DATA = [
-        "this movie was terrible", "i absolutely loved it",
-        "a complete disappointment", "one of the best films ever made",
-        "the plot was confusing and slow", "a truly heartwarming story",
-        "i would not recommend this to anyone", "an unforgettable experience for sure",
-        "what a complete mess", "simply fantastic from start to finish"
-    ]
-    
-    vocab = Vocabulary(TRAIN_DATA)
+    try:
+        train_data = load_data_from_file(args.data_path, args.json_key)
+        print(f"✅ {args.data_path} から {len(train_data)} 件のデータを読み込みました。")
+    except (FileNotFoundError, KeyError, TypeError, ValueError) as e:
+        print(f"❌ エラー: データファイルの読み込みに失敗しました。\n詳細: {e}")
+        return
+
+    vocab = Vocabulary(train_data)
+    print(f"📖 語彙を構築しました。語彙数: {vocab.vocab_size}")
     
     # モデル設定
     config = {'d_model': 64, 'd_state': 32, 'num_layers': 2, 'time_steps': 16}
     model = BreakthroughSNN(vocab_size=vocab.vocab_size, **config)
-    trainer = BreakthroughTrainer(model)
     
-    dataset = NextTokenPredictionDataset(TRAIN_DATA, vocab)
-    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+    # 汎用Trainerのセットアップ
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    criterion = CombinedLoss()
+    trainer = BreakthroughTrainer(model, optimizer, criterion)
+    
+    dataset = NextTokenPredictionDataset(train_data, vocab)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
     
     # 学習ループ
-    num_epochs = 100
-    for epoch in range(num_epochs):
-        for input_ids, target_ids in dataloader:
-            metrics = trainer.train_step(input_ids, target_ids)
-        if (epoch + 1) % 20 == 0:
-            print(f"Epoch {epoch+1}/{num_epochs}: {metrics}")
+    print("\n🔥 学習を開始します...")
+    for epoch in range(args.epochs):
+        metrics = trainer.train_epoch(dataloader)
+        if (epoch + 1) % args.log_interval == 0:
+            metrics_str = ", ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
+            print(f"Epoch {epoch+1: >3}/{args.epochs}: {metrics_str}")
             
     # モデル保存
-    model_path = "breakthrough_snn_model.pth"
+    model_path = args.model_path
     torch.save({
         'model_state_dict': model.state_dict(),
         'vocab': vocab,
@@ -182,34 +230,46 @@ def train():
     }, model_path)
     print(f"\n✅ 学習済みモデルを '{model_path}' に保存しました。")
 
-def inference():
+def inference(args):
     """学習済みモデルで推論（文章生成）を実行"""
-    MODEL_FILE_PATH = "breakthrough_snn_model.pth"
-    
     try:
-        engine = SNNInferenceEngine(model_path=MODEL_FILE_PATH)
-        test_sentences = [
-            "this movie was",
-            "i loved",
-            "the story",
-        ]
+        engine = SNNInferenceEngine(model_path=args.model_path)
         
-        for sentence in test_sentences:
-            generated_text = engine.generate(sentence)
+        # ユーザーからの入力を受け付けるループ
+        print("\n💬 テキスト生成を開始します。終了するには 'exit' または 'quit' と入力してください。")
+        while True:
+            start_text = input("入力テキスト: ")
+            if start_text.lower() in ["exit", "quit"]:
+                break
+            generated_text = engine.generate(start_text, max_len=args.max_len)
             print(f"生成結果: {generated_text}")
 
     except FileNotFoundError as e:
-        print(e)
-        print("エラー: 学習済みモデルファイルが必要です。先に 'train' モードで実行してください。")
+        print(f"❌ {e}")
+        print(f"エラー: 学習済みモデルファイル({args.model_path})が必要です。先に 'train' モードで実行してください。")
+    except Exception as e:
+        print(f"❌ 予期せぬエラーが発生しました: {e}")
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "train":
-        train()
-    elif len(sys.argv) > 1 and sys.argv[1] == "inference":
-        inference()
-    else:
-        print("使い方: python main.py [train|inference]")
-        # デフォルトで学習を実行
-        print("\n--- デフォルトの学習モードを実行します ---")
-        train()
+    parser = argparse.ArgumentParser(description="SNNベース AIチャットシステム")
+    subparsers = parser.add_subparsers(dest="command", required=True, help="実行するコマンド")
+
+    # --- 学習コマンド ---
+    parser_train = subparsers.add_parser("train", help="SNNモデルを学習します")
+    parser_train.add_argument("data_path", type=str, help="学習データのファイルパス (.json または .txt)")
+    parser_train.add_argument("--json_key", type=str, default=None, help="JSONファイル内のテキストリストが格納されているキー")
+    parser_train.add_argument("--epochs", type=int, default=100, help="学習エポック数")
+    parser_train.add_argument("--batch_size", type=int, default=4, help="バッチサイズ")
+    parser_train.add_argument("--learning_rate", type=float, default=5e-4, help="学習率")
+    parser_train.add_argument("--log_interval", type=int, default=20, help="ログを表示するエポック間隔")
+    parser_train.add_argument("--model_path", type=str, default="breakthrough_snn_model.pth", help="学習済みモデルの保存パス")
+    parser_train.set_defaults(func=train)
+
+    # --- 推論コマンド ---
+    parser_inference = subparsers.add_parser("inference", help="学習済みモデルで推論（テキスト生成）を実行します")
+    parser_inference.add_argument("--model_path", type=str, default="breakthrough_snn_model.pth", help="学習済みモデルのパス")
+    parser_inference.add_argument("--max_len", type=int, default=30, help="生成するテキストの最大長")
+    parser_inference.set_defaults(func=inference)
+
+    args = parser.parse_args()
+    args.func(args)

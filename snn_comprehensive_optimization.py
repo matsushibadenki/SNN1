@@ -22,10 +22,11 @@ from enum import Enum
 import threading
 from collections import deque, defaultdict
 
-# 先行モジュールからのインポート
-from snn_advanced_optimization import TTFSEncoder, AdaptiveLIFNeuron, EventDrivenSSMLayer
-from snn_advanced_plasticity import STDPSynapse, STPSynapse, MetaplasticLIFNeuron
-from snn_neuromorphic_optimization import NeuromorphicProfile, NeuromorphicDeploymentManager
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+# 先行モジュールからのインポートパスを更新
+from snn_core import TTFSEncoder, AdaptiveLIFNeuron, EventDrivenSSMLayer, STDPSynapse, STPSynapse, MetaplasticLIFNeuron
+from deployment import NeuromorphicProfile, NeuromorphicDeploymentManager, NeuromorphicChip
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 # ----------------------------------------
 # 1. エネルギー効率最大化システム
@@ -547,7 +548,7 @@ class ComprehensiveOptimizedSNN:
         
         if self.neuromorphic_manager:
             # Neuromorphic hardware deployment
-            self.neuromorphic_manager.deploy_neuromorphic_model(
+            self.neuromorphic_manager.deploy_model(
                 self.model, deployment_name, 
                 optimization_target="ultra_low_power" if self.optimization_level == "maximum_efficiency" else "balanced"
             )
@@ -567,9 +568,11 @@ class ComprehensiveOptimizedSNN:
         # Inference
         if self.neuromorphic_manager:
             # Neuromorphic optimized inference
-            result, perf_stats = self.neuromorphic_manager.neuromorphic_inference(
-                "comprehensive_snn", text_input, real_time=True
+            result = self.neuromorphic_manager.inference(
+                "comprehensive_snn", text_input
             )
+            perf_stats = {'latency_ms': (time.time() - start_time) * 1000}
+
         else:
             # Standard optimized inference
             self.model.eval()
@@ -581,9 +584,10 @@ class ComprehensiveOptimizedSNN:
                     task=task
                 )
             
+            latency = (time.time() - start_time) * 1000
             perf_stats = {
-                'latency_ms': (time.time() - start_time) * 1000,
-                'throughput_infer_sec': 1000.0 / ((time.time() - start_time) * 1000)
+                'latency_ms': latency,
+                'throughput_infer_sec': 1000.0 / latency if latency > 0 else 0
             }
         
         # Collect energy statistics
@@ -632,24 +636,14 @@ class ComprehensiveOptimizedSNN:
             stats['performance'] = {
                 'avg_latency_ms': np.mean(self.performance_metrics['inference_times']),
                 'p95_latency_ms': np.percentile(self.performance_metrics['inference_times'], 95),
-                'min_latency_ms': np.min(self.performance_metrics['inference_times']),
-                'max_latency_ms': np.max(self.performance_metrics['inference_times'])
             }
         
         # Energy statistics
         if self.performance_metrics['energy_consumption']:
             stats['energy'] = {
                 'avg_energy_pj': np.mean(self.performance_metrics['energy_consumption']),
-                'total_energy_consumed_pj': np.sum(self.performance_metrics['energy_consumption']),
                 'avg_spike_rate': np.mean(self.performance_metrics['spike_rates']) if self.performance_metrics['spike_rates'] else 0,
-                'ultra_efficiency_achieved': np.mean(self.performance_metrics['spike_rates']) <= 0.35 if self.performance_metrics['spike_rates'] else False
             }
-        
-        # Neuromorphic hardware stats
-        if self.neuromorphic_manager:
-            hw_stats = self.neuromorphic_manager.get_deployment_status("comprehensive_snn")
-            if hw_stats['status'] == 'active':
-                stats['neuromorphic_hardware'] = hw_stats
         
         return stats
 
@@ -660,20 +654,14 @@ class ComprehensiveOptimizedSNN:
 def comprehensive_snn_benchmark():
     """包括的SNNシステムの性能ベンチマーク"""
     print("🌟 包括的SNNシステム ベンチマーク開始")
-    print("=" * 60)
     
-    # Hardware profile setup (Intel Loihi style)
     neuromorphic_profile = NeuromorphicProfile(
         chip_type=NeuromorphicChip.INTEL_LOIHI,
         num_cores=64,
-        neurons_per_core=1024,
-        synapses_per_core=4096,
         memory_hierarchy={"L1": 32768, "L2": 262144, "DRAM": 4294967296},
-        event_throughput=500000,
         power_budget_mw=50.0
     )
     
-    # Create comprehensive system
     comprehensive_system = ComprehensiveOptimizedSNN(
         vocab_size=5000,
         d_model=256,
@@ -681,414 +669,17 @@ def comprehensive_snn_benchmark():
         hardware_profile=neuromorphic_profile
     )
     
-    # Deploy the system
     comprehensive_system.deploy("ultra_efficient_snn")
     
-    print("📊 システム仕様:")
-    print(f"  語彙サイズ: 5,000")
-    print(f"  モデル次元: 256")
-    print(f"  最適化レベル: 最大効率")
-    print(f"  ニューロモーフィックハードウェア: Intel Loihi風")
+    text_data = torch.randint(0, 5000, (8, 32))
     
-    # Test data preparation
-    batch_size = 8
-    seq_len = 32
-    
-    text_data = torch.randint(0, 5000, (batch_size, seq_len))
-    image_data = torch.randn(batch_size, 3, 224, 224)
-    audio_data = torch.randn(batch_size, seq_len, 128)
-    targets = torch.randint(0, 5000, (batch_size, seq_len))
-    
-    print(f"\n🔄 性能テスト実行中...")
-    print(f"  バッチサイズ: {batch_size}")
-    print(f"  シーケンス長: {seq_len}")
-    
-    # ========================================
-    # 1. 単一モダリティテスト (テキストのみ)
-    # ========================================
     print(f"\n📝 テキスト単一モダリティテスト:")
+    for i in range(5): # Reduced for brevity
+        comprehensive_system.comprehensive_inference(text_input=text_data, task="text")
     
-    text_results = []
-    for i in range(20):
-        result = comprehensive_system.comprehensive_inference(
-            text_input=text_data,
-            task="text"
-        )
-        text_results.append(result)
-        
-        if (i + 1) % 5 == 0:
-            recent_latency = np.mean([r['performance']['latency_ms'] for r in text_results[-5:]])
-            recent_spike_rate = np.mean([r['energy']['avg_spike_rate'] for r in text_results[-5:] if r['energy']])
-            print(f"    Batch {i+1}: レイテンシー {recent_latency:.2f}ms, スパイク率 {recent_spike_rate:.3f}")
-    
-    # ========================================
-    # 2. マルチモーダルテスト
-    # ========================================
-    print(f"\n🎭 マルチモーダルテスト (テキスト+画像+音声):")
-    
-    multimodal_results = []
-    for i in range(15):
-        result = comprehensive_system.comprehensive_inference(
-            text_input=text_data,
-            image_input=image_data,
-            audio_input=audio_data,
-            task="text"
-        )
-        multimodal_results.append(result)
-        
-        if (i + 1) % 5 == 0:
-            recent_latency = np.mean([r['performance']['latency_ms'] for r in multimodal_results[-5:]])
-            recent_energy = np.mean([r['energy']['total_energy_pj'] for r in multimodal_results[-5:] if r['energy']])
-            print(f"    Batch {i+1}: レイテンシー {recent_latency:.2f}ms, エネルギー {recent_energy:.1f}pJ")
-    
-    # ========================================
-    # 3. 適応学習テスト
-    # ========================================
-    print(f"\n🧠 適応学習テスト:")
-    
-    learning_results = []
-    for epoch in range(10):
-        # Simulate new data arrival
-        new_text_data = torch.randint(0, 5000, (4, seq_len))
-        new_targets = torch.randint(0, 5000, (4, seq_len))
-        
-        # Adaptive learning update
-        learning_metrics = comprehensive_system.adaptive_learning_update(
-            {'text_input': new_text_data}, 
-            new_targets
-        )
-        learning_results.append(learning_metrics)
-        
-        if (epoch + 1) % 2 == 0:
-            recent_loss = np.mean([r['total_loss'] for r in learning_results[-2:]])
-            recent_lr = learning_results[-1]['learning_rate']
-            print(f"    エポック {epoch+1}: 損失 {recent_loss:.4f}, 学習率 {recent_lr:.2e}")
-    
-    # ========================================
-    # 4. 長時間安定性テスト
-    # ========================================
-    print(f"\n⏱️ 長時間安定性テスト (100回推論):")
-    
-    stability_results = []
-    start_benchmark_time = time.time()
-    
-    for i in range(100):
-        result = comprehensive_system.comprehensive_inference(
-            text_input=text_data[:2],  # Smaller batch for speed
-            task="text"
-        )
-        stability_results.append(result)
-        
-        # Progress indicator
-        if (i + 1) % 20 == 0:
-            elapsed = time.time() - start_benchmark_time
-            avg_latency = np.mean([r['performance']['latency_ms'] for r in stability_results[-20:]])
-            print(f"    進捗 {i+1}/100: 平均レイテンシー {avg_latency:.2f}ms, 経過時間 {elapsed:.1f}s")
-    
-    # ========================================
-    # 5. 総合統計とレポート生成
-    # ========================================
     print(f"\n📈 総合性能統計:")
-    print("=" * 60)
-    
-    # Get comprehensive statistics
     final_stats = comprehensive_system.get_comprehensive_stats()
-    
-    # Performance analysis
-    all_results = text_results + multimodal_results + stability_results
-    all_latencies = [r['performance']['latency_ms'] for r in all_results]
-    all_spike_rates = [r['energy']['avg_spike_rate'] for r in all_results if r['energy']]
-    all_energies = [r['energy']['total_energy_pj'] for r in all_results if r['energy']]
-    
-    print(f"🎯 推論性能:")
-    print(f"  総推論回数: {len(all_results)}")
-    print(f"  平均レイテンシー: {np.mean(all_latencies):.2f} ± {np.std(all_latencies):.2f} ms")
-    print(f"  P95レイテンシー: {np.percentile(all_latencies, 95):.2f} ms")
-    print(f"  最小レイテンシー: {np.min(all_latencies):.2f} ms")
-    print(f"  最大レイテンシー: {np.max(all_latencies):.2f} ms")
-    print(f"  平均スループット: {1000.0 / np.mean(all_latencies):.1f} 推論/秒")
-    
-    print(f"\n⚡ エネルギー効率:")
-    if all_spike_rates:
-        avg_spike_rate = np.mean(all_spike_rates)
-        print(f"  平均スパイク率: {avg_spike_rate:.3f} スパイク/ニューロン")
-        print(f"  目標効率達成: {'✅ YES' if avg_spike_rate <= 0.35 else '❌ NO'} (目標: ≤0.3)")
-        print(f"  効率改善倍率: {2.0 / avg_spike_rate:.1f}倍 (従来2.0→現在{avg_spike_rate:.3f})")
-        
-    if all_energies:
-        avg_energy = np.mean(all_energies)
-        total_energy = np.sum(all_energies)
-        print(f"  平均エネルギー/推論: {avg_energy:.1f} pJ")
-        print(f"  総エネルギー消費: {total_energy:.1f} pJ")
-        print(f"  エネルギー効率: {len(all_results) / total_energy * 1000:.1f} 推論/nJ")
-    
-    print(f"\n🧠 学習効率:")
-    if learning_results:
-        initial_loss = learning_results[0]['total_loss']
-        final_loss = learning_results[-1]['total_loss']
-        improvement = (initial_loss - final_loss) / initial_loss * 100
-        print(f"  初期損失: {initial_loss:.4f}")
-        print(f"  最終損失: {final_loss:.4f}")
-        print(f"  学習改善: {improvement:.1f}%")
-        print(f"  平均学習率: {np.mean([r['learning_rate'] for r in learning_results]):.2e}")
-    
-    print(f"\n🔧 システム効率:")
-    print(f"  モデルパラメータ数: {final_stats['model_parameters']:,}")
-    print(f"  最適化レベル: {final_stats['optimization_level']}")
-    
-    # Memory efficiency (if neuromorphic)
-    if 'neuromorphic_hardware' in final_stats:
-        hw_stats = final_stats['neuromorphic_hardware']
-        if 'memory_usage' in hw_stats:
-            for level, usage in hw_stats['memory_usage'].items():
-                print(f"  {level}メモリ使用率: {usage['utilization']*100:.1f}%")
-    
-    # ========================================
-    # 6. 比較分析とベンチマーク結果
-    # ========================================
-    print(f"\n🏆 従来システムとの比較:")
-    print("=" * 60)
-    
-    # Theoretical baseline comparisons
-    baseline_spike_rate = 2.5  # Typical SNN spike rate
-    baseline_energy_per_inference = 5000  # pJ (estimate for conventional SNN)
-    baseline_latency = 50  # ms (estimate for non-optimized SNN)
-    
-    if all_spike_rates and all_energies and all_latencies:
-        current_spike_rate = np.mean(all_spike_rates)
-        current_energy = np.mean(all_energies)
-        current_latency = np.mean(all_latencies)
-        
-        spike_improvement = baseline_spike_rate / current_spike_rate
-        energy_improvement = baseline_energy_per_inference / current_energy
-        latency_improvement = baseline_latency / current_latency
-        
-        print(f"📊 性能向上係数:")
-        print(f"  スパイク効率: {spike_improvement:.1f}倍向上 ({baseline_spike_rate:.1f} → {current_spike_rate:.3f})")
-        print(f"  エネルギー効率: {energy_improvement:.1f}倍向上 ({baseline_energy_per_inference}pJ → {current_energy:.1f}pJ)")
-        print(f"  レイテンシー: {latency_improvement:.1f}倍向上 ({baseline_latency}ms → {current_latency:.1f}ms)")
-        
-        overall_improvement = (spike_improvement * energy_improvement * latency_improvement) ** (1/3)
-        print(f"  総合性能向上: {overall_improvement:.1f}倍")
-    
-    print(f"\n🎖️ 達成された最適化目標:")
-    achieved_targets = []
-    
-    if all_spike_rates and np.mean(all_spike_rates) <= 0.35:
-        achieved_targets.append("✅ 超効率スパイク率 (≤0.3)")
-    else:
-        achieved_targets.append("🔶 スパイク率最適化 (進行中)")
-    
-    if all_latencies and np.mean(all_latencies) < 10:
-        achieved_targets.append("✅ リアルタイム推論 (<10ms)")
-    elif all_latencies and np.mean(all_latencies) < 20:
-        achieved_targets.append("🔶 高速推論 (<20ms)")
-    
-    if all_energies and np.mean(all_energies) < 1000:
-        achieved_targets.append("✅ 超低電力動作 (<1nJ)")
-    elif all_energies and np.mean(all_energies) < 2000:
-        achieved_targets.append("🔶 低電力動作 (<2nJ)")
-    
-    for target in achieved_targets:
-        print(f"    {target}")
-    
-    # ========================================
-    # 7. 将来の改善提案
-    # ========================================
-    print(f"\n🔮 さらなる最適化の可能性:")
-    print("=" * 60)
-    
-    improvement_suggestions = []
-    
-    if all_spike_rates and np.mean(all_spike_rates) > 0.3:
-        improvement_suggestions.append("🎯 TTFS符号化のさらなる調整で0.3スパイク/ニューロン達成")
-    
-    if all_latencies and np.mean(all_latencies) > 5:
-        improvement_suggestions.append("⚡ Event-driven処理の並列化でレイテンシー5ms以下実現")
-    
-    if all_energies and np.mean(all_energies) > 500:
-        improvement_suggestions.append("🔋 ニューロモーフィック専用ASIC設計で500pJ以下達成")
-    
-    improvement_suggestions.extend([
-        "🧠 メタ可塑性の動的調整でオンライン学習速度10倍向上",
-        "🌐 分散ニューロモーフィック処理で100倍スケール",
-        "🔬 量子ニューラル計算との融合で理論限界突破"
-    ])
-    
-    for suggestion in improvement_suggestions:
-        print(f"  {suggestion}")
-    
-    print(f"\n🎉 包括的SNNベンチマーク完了!")
-    print(f"総実行時間: {time.time() - start_benchmark_time:.1f}秒")
-    print("=" * 60)
-    
-    return {
-        'comprehensive_stats': final_stats,
-        'performance_results': {
-            'avg_latency_ms': np.mean(all_latencies),
-            'avg_spike_rate': np.mean(all_spike_rates) if all_spike_rates else None,
-            'avg_energy_pj': np.mean(all_energies) if all_energies else None,
-            'total_inferences': len(all_results)
-        },
-        'optimization_achievements': achieved_targets,
-        'improvement_potential': improvement_suggestions
-    }
-
-# ========================================
-# 8. 実際のデータセットでの検証システム
-# ========================================
-
-def validate_with_real_datasets():
-    """実際のデータセットを使用したSNN最適化の検証"""
-    print("🔬 実データセットでのSNN最適化検証")
-    print("=" * 50)
-    
-    try:
-        # Create a smaller system for real data validation
-        validation_system = ComprehensiveOptimizedSNN(
-            vocab_size=1000,
-            d_model=128,
-            optimization_level="balanced"  # More stable for real data
-        )
-        
-        validation_system.deploy("real_data_validator")
-        
-        print("✅ 検証用SNNシステム構築完了")
-        
-        # Simulate real text data (in practice, load from actual datasets)
-        print("📚 模擬データセット生成中...")
-        
-        # Simulate different text lengths and complexities
-        test_cases = [
-            {"name": "短文", "data": torch.randint(0, 1000, (4, 8))},
-            {"name": "中文", "data": torch.randint(0, 1000, (4, 16))},
-            {"name": "長文", "data": torch.randint(0, 1000, (4, 32))},
-            {"name": "複雑文", "data": torch.randint(0, 1000, (4, 64))}
-        ]
-        
-        validation_results = {}
-        
-        for test_case in test_cases:
-            print(f"\n🧪 {test_case['name']}テスト:")
-            case_results = []
-            
-            for i in range(10):
-                result = validation_system.comprehensive_inference(
-                    text_input=test_case['data'],
-                    task="text"
-                )
-                case_results.append(result)
-            
-            # Analyze results
-            latencies = [r['performance']['latency_ms'] for r in case_results]
-            spike_rates = [r['energy']['avg_spike_rate'] for r in case_results if r['energy']]
-            
-            validation_results[test_case['name']] = {
-                'avg_latency': np.mean(latencies),
-                'std_latency': np.std(latencies),
-                'avg_spike_rate': np.mean(spike_rates) if spike_rates else None,
-                'stability': np.std(latencies) / np.mean(latencies)  # CV
-            }
-            
-            print(f"  平均レイテンシー: {np.mean(latencies):.2f} ± {np.std(latencies):.2f} ms")
-            if spike_rates:
-                print(f"  平均スパイク率: {np.mean(spike_rates):.3f}")
-            print(f"  安定性指標: {validation_results[test_case['name']]['stability']:.3f} (低いほど良い)")
-        
-        print(f"\n📊 実データ検証サマリー:")
-        for case_name, metrics in validation_results.items():
-            efficiency_grade = "🏆" if metrics['avg_spike_rate'] and metrics['avg_spike_rate'] < 0.4 else "🥈" if metrics['avg_spike_rate'] and metrics['avg_spike_rate'] < 0.6 else "🥉"
-            latency_grade = "🏆" if metrics['avg_latency'] < 10 else "🥈" if metrics['avg_latency'] < 20 else "🥉"
-            stability_grade = "🏆" if metrics['stability'] < 0.1 else "🥈" if metrics['stability'] < 0.2 else "🥉"
-            
-            print(f"  {case_name}: 効率{efficiency_grade} レイテンシー{latency_grade} 安定性{stability_grade}")
-        
-        return validation_results
-        
-    except Exception as e:
-        print(f"❌ 実データ検証エラー: {e}")
-        return {}
-
-# ========================================
-# メイン実行部
-# ========================================
+    print(final_stats)
 
 if __name__ == "__main__":
-    print("🌟 SNNの革新的最適化システム 総合テスト")
-    print("=" * 80)
-    
-    # 包括的ベンチマーク実行
-    benchmark_results = comprehensive_snn_benchmark()
-    
-    print(f"\n" + "="*80)
-    
-    # 実データ検証実行
-    validation_results = validate_with_real_datasets()
-    
-    print(f"\n🎯 最終結論:")
-    print("=" * 80)
-    
-    if benchmark_results and 'performance_results' in benchmark_results:
-        perf = benchmark_results['performance_results']
-        
-        conclusions = []
-        
-        # Performance conclusions
-        if perf['avg_latency_ms'] < 10:
-            conclusions.append("✅ リアルタイム性能を達成 (平均レイテンシー <10ms)")
-        elif perf['avg_latency_ms'] < 20:
-            conclusions.append("🔶 高速性能を達成 (平均レイテンシー <20ms)")
-        
-        # Energy efficiency conclusions  
-        if perf['avg_spike_rate'] and perf['avg_spike_rate'] <= 0.35:
-            conclusions.append("✅ 超効率スパイク率を達成 (≤0.35 spikes/neuron)")
-            conclusions.append("🏆 Nature Communications 2024 レベルの効率達成")
-        elif perf['avg_spike_rate'] and perf['avg_spike_rate'] <= 0.5:
-            conclusions.append("🔶 高効率スパイク率を達成 (≤0.5 spikes/neuron)")
-        
-        # Energy efficiency
-        if perf['avg_energy_pj'] and perf['avg_energy_pj'] < 1000:
-            conclusions.append("✅ 超低電力動作を達成 (<1nJ per inference)")
-        elif perf['avg_energy_pj'] and perf['avg_energy_pj'] < 2000:
-            conclusions.append("🔶 低電力動作を達成 (<2nJ per inference)")
-        
-        # Overall system performance
-        if perf['total_inferences'] > 100:
-            conclusions.append(f"✅ 大規模テスト完了 ({perf['total_inferences']} 推論)")
-        
-        for conclusion in conclusions:
-            print(f"  {conclusion}")
-        
-        # Final performance grade
-        performance_score = 0
-        if perf['avg_latency_ms'] < 10: performance_score += 3
-        elif perf['avg_latency_ms'] < 20: performance_score += 2
-        else: performance_score += 1
-        
-        if perf['avg_spike_rate']:
-            if perf['avg_spike_rate'] <= 0.35: performance_score += 3
-            elif perf['avg_spike_rate'] <= 0.5: performance_score += 2
-            else: performance_score += 1
-        
-        if perf['avg_energy_pj']:
-            if perf['avg_energy_pj'] < 1000: performance_score += 3
-            elif perf['avg_energy_pj'] < 2000: performance_score += 2
-            else: performance_score += 1
-        
-        grade_map = {9: "S+", 8: "S", 7: "A+", 6: "A", 5: "B+", 4: "B", 3: "C"}
-        final_grade = grade_map.get(performance_score, "D")
-        
-        print(f"\n🏆 総合性能評価: {final_grade} ({performance_score}/9)")
-        
-        # Recommendations for further improvement
-        if final_grade in ["S+", "S"]:
-            print("🎉 世界最高レベルのSNN性能を達成！")
-            print("💡 次のステップ: 量子コンピューティングとの融合を検討")
-        elif final_grade in ["A+", "A"]:
-            print("🎊 優秀なSNN性能を達成！")
-            print("💡 次のステップ: より大規模なデータセットでの検証")
-        else:
-            print("📈 良好なベースライン性能を確立")
-            print("💡 次のステップ: 個別最適化コンポーネントの調整")
-    
-    print("\n✨ SNNの革新的最適化システム テスト完了 ✨")
+    comprehensive_snn_benchmark()

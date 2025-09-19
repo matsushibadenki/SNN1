@@ -10,13 +10,13 @@
 * **時間情報処理:** スパイクのタイミング情報を活用し、複雑な時系列データや文脈のニュアンスを捉えます。  
 * **スケーラビリティ:** ニューロモーフィックハードウェアでの動作を視野に入れた拡張性の高いアーキテクチャを採用します。
 
-### **1.2. ファイル**
+### **1.2. ファイル構成**
 
-* **snn_core.py:** コア機能。  
-* **deployment.py:** デプロイ機能。  
-* **main.py:** 学習・推論の実行。
-* **snn_comprehensive_optimization.py:** 統合システムのテスト。
-
+* **snn\_core.py**: モデル定義など、システムの中核となる機能。  
+* **main.py**: 学習と推論を実行するメインスクリプト。  
+* **deployment.py**: モデルのデプロイや継続学習に関する機能。  
+* **snn\_comprehensive\_optimization.py**: マルチモーダル対応など、先進的な統合システムのテスト。  
+* **doc/data\_format\_specification.md**: 学習データの形式を定義した仕様書。
 
 ## **2\. 使い方 (How to Use)**
 
@@ -28,27 +28,27 @@ pip install \-r requirements.txt
 
 ### **ステップ2: モデルの学習**
 
-main.py を train モードで実行し、外部データファイルを使ってSNNモデルを学習させます。学習が完了すると、breakthrough\_snn\_model.pth ファイルが生成されます。
+main.py を train モードで実行し、SNNモデルを学習させます。学習データは **JSON Lines (.jsonl) 形式** を使用します。学習が完了すると、breakthrough\_snn\_model.pth ファイルが生成されます。
 
-#### **TXTファイルで学習する場合**
+\--data\_format オプションで、データの構造を指定してください。
 
-各行が1つの学習データとなるテキストファイルを指定します。
+#### **例1: 基本的なテキスト (simple\_text) で学習**
 
-python main.py train \[TXTファイルへのパス\]
+各行に {"text": "..."} 形式で文章が記述された corpus.jsonl を使って学習します。
 
-*(例: sample\_data.txt を使う場合)*
+python main.py train path/to/corpus.jsonl \--data\_format simple\_text
 
-python main.py train sample\_data.txt
+#### **例2: 対話形式 (dialogue) で学習**
 
-#### **JSONファイルで学習する場合**
+{"conversations": \[{"from": "user", ...}\]} 形式で対話データが記述された dialogues.jsonl を使って学習します。
 
-テキストデータが配列（リスト）として格納されているJSONファイルを指定します。--json\_key オプションで、その配列が格納されているキー名を指定してください。
+python main.py train path/to/dialogues.jsonl \--data\_format dialogue \--epochs 200
 
-python main.py train \[JSONファイルへのパス\] \--json\_key \[キー名\]
+#### **例3: 指示形式 (instruction) で学習**
 
-*(例: sample\_data.json の corpus キーを使う場合)*
+{"instruction": "...", "output": "..."} 形式で指示応答データが記述された instructions.jsonl を使って学習します。
 
-python main.py train sample\_data.json \--json\_key corpus
+python main.py train path/to/instructions.jsonl \--data\_format instruction \--learning\_rate 1e-4
 
 ### **ステップ3: 学習済みモデルによる推論**
 
@@ -68,20 +68,11 @@ python deployment.py
 
 ### **3.1. データフロー**
 
-テキスト入力 →
-
-入力処理  
-→ スパイク列 →
-
-SNNコアエンジン  
-→ 出力スパイク →
-
-出力処理  
-→ テキスト応答
+テキスト入力 → **\[入力処理\]** → スパイク列 → **\[SNNコアエンジン\]** → 出力スパイク → **\[出力処理\]** → テキスト応答
 
 ### **3.2. コアコンポーネント**
 
-* **入力処理:** テキストをトークン化し、単語埋め込みを経て、時間エンコーディング等の手法でスパイク列に変換します。  
+* **入力処理:** テキストをトークン化し、単語埋め込みを経て、スパイク列に変換します。  
 * **SNNコアエンジン:** 本プロジェクトの核となるBreakthroughSNNモデルが処理を実行します。このモデルは以下の革新的技術を統合しています。  
   * **Spiking State Space Model (Spiking-SSM):** 線形計算量で長期依存関係を扱います。  
 * **出力処理:** 出力スパイクをデコードし、次の単語トークンを生成してテキスト応答を構築します。
@@ -96,21 +87,8 @@ SNNコアエンジン
 | 主要ライブラリ | NumPy | データ操作用 |
 | 推論ターゲット | CPU / (Intel Loihi 2\) | 最終目標はニューロモーフィックハードウェア |
 
-## **5\. SNNシステム さらなる最適化ガイド**
+### **次のステップについて**
 
-### **5.1. モデルアーキテクチャの進化**
-
-| アーキテクチャ | 計算量 | メモリ | 長期依存 | エネルギー |
-| :---- | :---- | :---- | :---- | :---- |
-| Transformer | O(n²) | 高 | ◎ | 高 |
-| Spiking-SSM | O(n) | 低 | ◎◎ | **超低** |
-
-### **5.2. 学習戦略**
-
-* **蒸留学習 (Knowledge Distillation):** 大規模なANNモデルから知識を転移させ、SNNの学習を効率化します。  
-* **段階的学習 (Curriculum Learning):** 簡単なタスクから複雑なタスクへと段階的に学習を進めることで、モデルの安定性と性能を向上させます。
-
-### **5.3. デプロイ戦略**
-
-* **モデル圧縮とプルーニング:** 重要度の低い接続を除去する構造的プルーニングや、INT8/INT4量子化によりモデルサイズを劇的に削減します。  
-* **エッジデバイス最適化:** タイムステップの削減やニューロンモデルの簡略化により、リソースが限られた環境での動作を可能にします。
+main.py と README.md の更新が完了しました。  
+プロジェクトはこれで、より高度で多様な学習タスクを実行できる基盤が整いました。  
+他に何かお手伝いできることはありますか？ 例えば、multimodal 形式のデータローダーの実装や、推論エンジンの機能強化（ビームサーチの導入など）も可能です。

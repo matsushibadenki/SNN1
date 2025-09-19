@@ -1,85 +1,72 @@
 # /path/to/your/project/main.py
-# SNNモデルの学習と推論を実行するためのメインスクリプト
-#
-# 元ファイル:
-# - train_text_snn.py (学習部分)
-# - inference.py (推論部分)
-# - snn_breakthrough.py (実行ブロック)
-# を統合し、snn_core.pyのコンポーネントを使用するように変更。
-# 学習タスクを「次トークン予測」に修正し、より高度なモデルに対応。
+# SNNモデルの学習と推論を実行するためのメインスクリプト (データ形式仕様書v1.0対応版)
 #
 # 改善点:
-# - argparseを導入し、コマンドラインから外部データファイル(JSON/TXT)を読み込めるように修正。
-# - 汎用化されたBreakthroughTrainerに対応。
+# - データ形式仕様書に基づき、.jsonl形式の読み込みに対応。
+# - --data_format引数を導入し、'simple_text', 'dialogue', 'instruction'の形式を動的に切り替え可能に。
+# - データセット部分を抽象化し、各形式に対応する専用のDatasetクラスを実装。
+# - 語彙構築プロセスを汎用化し、複雑なデータ構造からもテキストを抽出できるように改善。
 
 import torch
 from torch.utils.data import Dataset, DataLoader
+from torch.nn.utils.rnn import pad_sequence
 from collections import Counter
 import itertools
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any, Iterator
 import os
 import random
 import argparse
 import json
+from enum import Enum
 
 # snn_coreから主要コンポーネントをインポート
 from snn_core import BreakthroughSNN, BreakthroughTrainer, CombinedLoss
 
 # ----------------------------------------
-# 1. データ準備と語彙の構築
+# 1. データ形式とローダー
 # ----------------------------------------
 
-def load_data_from_file(file_path: str, json_key: str = None) -> List[str]:
+class DataFormat(Enum):
+    """サポートするデータ形式を定義"""
+    SIMPLE_TEXT = "simple_text"
+    DIALOGUE = "dialogue"
+    INSTRUCTION = "instruction"
+
+def load_jsonl_data(file_path: str) -> Iterator[Dict[str, Any]]:
     """
-    外部のJSONまたはTXTファイルからテキストデータを読み込みます。
+    JSON Lines (.jsonl) ファイルを1行ずつ遅延読み込みします。
 
     Args:
         file_path (str): データファイルのパス。
-        json_key (str, optional): JSONファイルの場合、テキストリストが格納されているキー。
 
-    Returns:
-        List[str]: テキストデータのリスト。
+    Yields:
+        Dict[str, Any]: ファイル内の各行のJSONオブジェクト。
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"データファイルが見つかりません: {file_path}")
 
-    _, ext = os.path.splitext(file_path)
-    
-    if ext == '.json':
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        if json_key:
-            if json_key not in data:
-                raise KeyError(f"指定されたキー '{json_key}' がJSONファイル内に見つかりません。")
-            texts = data[json_key]
-        else:
-            # キーが指定されない場合、JSONデータ自体がリストであることを期待
-            texts = data
-        
-        if not isinstance(texts, list) or not all(isinstance(t, str) for t in texts):
-            raise TypeError("JSONから抽出されたデータは、文字列のリストである必要があります。")
-        return texts
+    if not file_path.endswith('.jsonl'):
+        print(f"警告: ファイル '{file_path}' は .jsonl 拡張子ではありません。JSON Lines形式として処理を試みます。")
 
-    elif ext == '.txt':
-        with open(file_path, 'r', encoding='utf-8') as f:
-            # 空行を除外して読み込む
-            return [line.strip() for line in f if line.strip()]
-    else:
-        raise ValueError(f"サポートされていないファイル形式です: {ext} (.json または .txt を使用してください)")
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():
+                yield json.loads(line)
+
+# ----------------------------------------
+# 2. 語彙の構築
+# ----------------------------------------
 
 class Vocabulary:
     """テキストとIDを相互変換するための語彙クラス"""
-    def __init__(self, all_texts: List[str]):
+    def __init__(self):
         # 予約トークン
         self.special_tokens = {"<PAD>": 0, "<UNK>": 1, "<START>": 2, "<END>": 3}
         self.word2idx = self.special_tokens.copy()
         self.idx2word = {v: k for k, v in self.word2idx.items()}
-        if all_texts:
-            self._build_vocab(all_texts)
 
-    def _build_vocab(self, all_texts: List[str]):
-        all_words = list(itertools.chain.from_iterable(txt.lower().split() for txt in all_texts))
+    def build_vocab(self, all_texts: Iterator[str]):
+        all_words = itertools.chain.from_iterable(txt.lower().split() for txt in all_texts)
         word_counts = Counter(all_words)
         for word, _ in word_counts.items():
             if word not in self.word2idx:
@@ -94,7 +81,9 @@ class Vocabulary:
         return tokens
 
     def decode(self, token_ids: List[int]) -> str:
-        return " ".join([self.idx2word.get(idx, "<UNK>") for idx in token_ids])
+        # <START> と <END> トークンはデコード結果から除外することが多い
+        ids_to_decode = [idx for idx in token_ids if idx not in (self.special_tokens["<START>"], self.special_tokens["<END>"])]
+        return " ".join([self.idx2word.get(idx, "<UNK>") for idx in ids_to_decode])
 
     @property
     def vocab_size(self) -> int:
@@ -104,38 +93,106 @@ class Vocabulary:
     def pad_id(self) -> int:
         return self.special_tokens["<PAD>"]
 
-class NextTokenPredictionDataset(Dataset):
-    """
-    次トークン予測のためのデータセット。
-    文章を受け取り、(入力シーケンス, ターゲットシーケンス)のペアを生成します。
-    例: "i love this movie" -> input="<START> i love this", target="i love this <END>"
-    """
-    def __init__(self, data: List[str], vocab: Vocabulary, max_len: int = 32):
+# ----------------------------------------
+# 3. データセットクラス
+# ----------------------------------------
+
+class SNNBaseDataset(Dataset):
+    """全てのデータセットクラスの基底クラス"""
+    def __init__(self, file_path: str, vocab: Vocabulary):
         self.vocab = vocab
-        self.max_len = max_len
-        self.encoded_data = [self.vocab.encode(text) for text in data]
-    
+        self.data = list(load_jsonl_data(file_path))
+
     def __len__(self):
-        return len(self.encoded_data)
-    
+        return len(self.data)
+
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
+        raise NotImplementedError
+
+    @staticmethod
+    def extract_texts(file_path: str) -> Iterator[str]:
+        raise NotImplementedError
+
+class SimpleTextDataset(SNNBaseDataset):
+    """ 'simple_text' 形式のデータセット """
     def __getitem__(self, idx):
-        encoded = self.encoded_data[idx]
+        item = self.data[idx]
+        encoded = self.vocab.encode(item['text'])
+        return torch.tensor(encoded[:-1]), torch.tensor(encoded[1:], dtype=torch.long)
+
+    @staticmethod
+    def extract_texts(file_path: str) -> Iterator[str]:
+        for item in load_jsonl_data(file_path):
+            yield item['text']
+
+class DialogueDataset(SNNBaseDataset):
+    """ 'dialogue' 形式のデータセット """
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        full_conversation = " ".join([turn['value'] for turn in item['conversations']])
+        encoded = self.vocab.encode(full_conversation)
+        return torch.tensor(encoded[:-1]), torch.tensor(encoded[1:], dtype=torch.long)
+
+    @staticmethod
+    def extract_texts(file_path: str) -> Iterator[str]:
+        for item in load_jsonl_data(file_path):
+            for turn in item['conversations']:
+                yield turn['value']
+
+class InstructionDataset(SNNBaseDataset):
+    """ 'instruction' 形式のデータセット """
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        # 指示と入力を結合してプロンプトを作成
+        prompt = item['instruction']
+        if 'input' in item and item['input']:
+            prompt += f"\n{item['input']}"
         
-        # 入力とターゲットを作成
-        input_seq = encoded[:-1]
-        target_seq = encoded[1:]
+        # プロンプトと出力を結合して完全なテキストを作成
+        full_text = f"{prompt}\n{item['output']}"
+        encoded = self.vocab.encode(full_text)
         
-        # パディング
-        input_len = len(input_seq)
-        pad_len = self.max_len - input_len
-        
-        padded_input = input_seq[:self.max_len] + [self.vocab.pad_id] * max(0, pad_len)
-        padded_target = target_seq[:self.max_len] + [self.vocab.pad_id] * max(0, pad_len)
-        
-        return torch.tensor(padded_input), torch.tensor(padded_target, dtype=torch.long)
+        # 出力部分のみを損失計算の対象とするため、プロンプト部分は無視する
+        # ここではシンプルに全体を学習対象とするが、高度化も可能
+        return torch.tensor(encoded[:-1]), torch.tensor(encoded[1:], dtype=torch.long)
+
+    @staticmethod
+    def extract_texts(file_path: str) -> Iterator[str]:
+        for item in load_jsonl_data(file_path):
+            yield item['instruction']
+            if 'input' in item and item['input']:
+                yield item['input']
+            yield item['output']
+
+def create_dataset(data_format: DataFormat, file_path: str, vocab: Vocabulary) -> SNNBaseDataset:
+    """データ形式に応じて適切なデータセットクラスをインスタンス化するファクトリ関数"""
+    format_map = {
+        DataFormat.SIMPLE_TEXT: SimpleTextDataset,
+        DataFormat.DIALOGUE: DialogueDataset,
+        DataFormat.INSTRUCTION: InstructionDataset
+    }
+    if data_format not in format_map:
+        raise ValueError(f"サポートされていないデータ形式です: {data_format}")
+    return format_map[data_format](file_path, vocab)
+
+def get_text_extractor(data_format: DataFormat) -> callable:
+    """データ形式に応じたテキスト抽出関数を取得"""
+    format_map = {
+        DataFormat.SIMPLE_TEXT: SimpleTextDataset.extract_texts,
+        DataFormat.DIALOGUE: DialogueDataset.extract_texts,
+        DataFormat.INSTRUCTION: InstructionDataset.extract_texts
+    }
+    return format_map[data_format]
+
+def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]], pad_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    """可変長のシーケンスをパディングするためのCollate関数"""
+    inputs, targets = zip(*batch)
+    padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=pad_id)
+    padded_targets = pad_sequence(targets, batch_first=True, padding_value=pad_id)
+    return padded_inputs, padded_targets
 
 # ----------------------------------------
-# 2. 推論エンジン
+# 4. 推論エンジン
 # ----------------------------------------
 
 class SNNInferenceEngine:
@@ -155,52 +212,54 @@ class SNNInferenceEngine:
         self.model.eval()
         
     def generate(self, start_text: str, max_len: int = 20) -> str:
-        """与えられたテキストに続く文章を生成する"""
         print(f"\n生成開始: '{start_text}'")
         
-        # 初期テキストをエンコード
-        input_ids = self.vocab.encode(start_text, add_start_end=False)
+        input_ids = self.vocab.encode(start_text, add_start_end=True)[:-1] # ENDトークンは不要
         input_tensor = torch.tensor([input_ids], device=self.device)
         
         generated_ids = list(input_ids)
         
         with torch.no_grad():
             for _ in range(max_len):
-                # モデルに現在のシーケンスを入力
                 logits = self.model(input_tensor)
-                
-                # 最後のトークンの予測確率から次のトークンをサンプリング
                 next_token_logits = logits[:, -1, :]
                 next_token_id = torch.argmax(next_token_logits, dim=-1).item()
                 
-                # 生成が終了トークンに達したら終了
                 if next_token_id == self.vocab.special_tokens["<END>"]:
                     break
                 
                 generated_ids.append(next_token_id)
-                # 次の入力として、生成されたトークンを追加
-                input_tensor = torch.tensor([generated_ids], device=self.device)
+                input_tensor = torch.cat([input_tensor, torch.tensor([[next_token_id]], device=self.device)], dim=1)
         
         return self.vocab.decode(generated_ids)
 
 # ----------------------------------------
-# 3. 実行ブロック
+# 5. 実行ブロック
 # ----------------------------------------
 
 def train(args):
     """モデルの学習を実行"""
-    print("🚀 革新的SNNシステムの訓練開始 (次トークン予測タスク)")
+    print(f"🚀 革新的SNNシステムの訓練開始 (データ形式: {args.data_format.value})")
     
     try:
-        train_data = load_data_from_file(args.data_path, args.json_key)
-        print(f"✅ {args.data_path} から {len(train_data)} 件のデータを読み込みました。")
-    except (FileNotFoundError, KeyError, TypeError, ValueError) as e:
-        print(f"❌ エラー: データファイルの読み込みに失敗しました。\n詳細: {e}")
+        # データから語彙を構築
+        vocab = Vocabulary()
+        print("📖 語彙を構築中...")
+        text_extractor = get_text_extractor(args.data_format)
+        vocab.build_vocab(text_extractor(args.data_path))
+        print(f"✅ 語彙を構築しました。語彙数: {vocab.vocab_size}")
+
+        # データセットとデータローダーを作成
+        dataset = create_dataset(args.data_format, args.data_path, vocab)
+        custom_collate_fn = lambda batch: collate_fn(batch, vocab.pad_id)
+        dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, collate_fn=custom_collate_fn)
+        print(f"✅ {args.data_path} から {len(dataset)} 件のデータを読み込みました。")
+
+    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
+        print(f"❌ エラー: データファイルの読み込みまたは処理に失敗しました。\n詳細: {e}")
+        print("ヒント: --data_format 引数がファイルの内容と一致しているか、.jsonl ファイルが仕様書通りか確認してください。")
         return
 
-    vocab = Vocabulary(train_data)
-    print(f"📖 語彙を構築しました。語彙数: {vocab.vocab_size}")
-    
     # モデル設定
     config = {'d_model': 64, 'd_state': 32, 'num_layers': 2, 'time_steps': 16}
     model = BreakthroughSNN(vocab_size=vocab.vocab_size, **config)
@@ -209,9 +268,6 @@ def train(args):
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     criterion = CombinedLoss()
     trainer = BreakthroughTrainer(model, optimizer, criterion)
-    
-    dataset = NextTokenPredictionDataset(train_data, vocab)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
     
     # 学習ループ
     print("\n🔥 学習を開始します...")
@@ -235,7 +291,6 @@ def inference(args):
     try:
         engine = SNNInferenceEngine(model_path=args.model_path)
         
-        # ユーザーからの入力を受け付けるループ
         print("\n💬 テキスト生成を開始します。終了するには 'exit' または 'quit' と入力してください。")
         while True:
             start_text = input("入力テキスト: ")
@@ -251,24 +306,30 @@ def inference(args):
         print(f"❌ 予期せぬエラーが発生しました: {e}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SNNベース AIチャットシステム")
+    parser = argparse.ArgumentParser(description="SNNベース AIチャットシステム (データ形式仕様書v1.0対応)")
     subparsers = parser.add_subparsers(dest="command", required=True, help="実行するコマンド")
 
     # --- 学習コマンド ---
     parser_train = subparsers.add_parser("train", help="SNNモデルを学習します")
-    parser_train.add_argument("data_path", type=str, help="学習データのファイルパス (.json または .txt)")
-    parser_train.add_argument("--json_key", type=str, default=None, help="JSONファイル内のテキストリストが格納されているキー")
+    parser_train.add_argument("data_path", type=str, help="学習データのファイルパス (.jsonl)")
+    parser_train.add_argument(
+        "--data_format",
+        type=DataFormat,
+        default=DataFormat.SIMPLE_TEXT,
+        choices=list(DataFormat),
+        help="学習データの形式"
+    )
     parser_train.add_argument("--epochs", type=int, default=100, help="学習エポック数")
     parser_train.add_argument("--batch_size", type=int, default=4, help="バッチサイズ")
     parser_train.add_argument("--learning_rate", type=float, default=5e-4, help="学習率")
-    parser_train.add_argument("--log_interval", type=int, default=20, help="ログを表示するエポック間隔")
+    parser_train.add_argument("--log_interval", type=int, default=10, help="ログを表示するエポック間隔")
     parser_train.add_argument("--model_path", type=str, default="breakthrough_snn_model.pth", help="学習済みモデルの保存パス")
     parser_train.set_defaults(func=train)
 
     # --- 推論コマンド ---
     parser_inference = subparsers.add_parser("inference", help="学習済みモデルで推論（テキスト生成）を実行します")
     parser_inference.add_argument("--model_path", type=str, default="breakthrough_snn_model.pth", help="学習済みモデルのパス")
-    parser_inference.add_argument("--max_len", type=int, default=30, help="生成するテキストの最大長")
+    parser_inference.add_argument("--max_len", type=int, default=40, help="生成するテキストの最大長")
     parser_inference.set_defaults(func=inference)
 
     args = parser.parse_args()

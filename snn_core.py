@@ -6,12 +6,18 @@
 # - advanced_snn_chat.py
 # - train_text_snn.py
 # のうち、最も先進的な機能を統合・整理し、さらに洗練させたバージョン
+#
+# 改善点:
+# - BreakthroughTrainerを汎用化し、学習・評価ループ、チェックポイント機能などを統合。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from spikingjelly.activation_based import neuron, surrogate, functional
-from typing import Tuple
+from typing import Tuple, Dict, Any, Optional
+from torch.utils.data import DataLoader
+import os
+import collections
 
 # ----------------------------------------
 # 1. 高度なスパイクエンコーダー
@@ -109,6 +115,9 @@ class SpikingSSMLayer(nn.Module):
             
             outputs.append(out_spike)
 
+        # ネットワークの状態をリセットして、次のバッチで再利用できるようにする
+        functional.reset_net(self)
+        
         return torch.stack(outputs, dim=1)
 
 
@@ -195,27 +204,105 @@ class CombinedLoss(nn.Module):
         }
 
 class BreakthroughTrainer:
-    """革新的SNNの訓練システム"""
-    def __init__(self, model: BreakthroughSNN, device: str = "cuda" if torch.cuda.is_available() else "cpu"):
+    """
+    汎用性と拡張性を高めたSNNの統合トレーニングシステム。
+    学習、評価、チェックポイント管理などの機能を提供します。
+    """
+    def __init__(
+        self,
+        model: BreakthroughSNN,
+        optimizer: torch.optim.Optimizer,
+        criterion: nn.Module,
+        scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        grad_clip_norm: float = 1.0
+    ):
         self.model = model.to(device)
         self.device = device
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=5e-4)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=10000)
-        self.criterion = CombinedLoss()
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.criterion = criterion
+        self.grad_clip_norm = grad_clip_norm
 
-    def train_step(self, input_ids: torch.Tensor, target_ids: torch.Tensor) -> dict:
-        self.model.train()
-        input_ids, target_ids = input_ids.to(self.device), target_ids.to(self.device)
+    def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
+        """学習と評価の共通ステップを実行"""
+        # is_trainフラグに応じてモデルを train/eval モードに設定
+        self.model.train(is_train)
         
-        self.optimizer.zero_grad()
-        logits, spike_data = self.model(input_ids, return_spikes=True)
+        # バッチデータをデバイスに転送
+        input_ids, target_ids = [t.to(self.device) for t in batch]
+
+        # forwardパス (評価時は勾配計算を無効化)
+        with torch.set_grad_enabled(is_train):
+            logits, spike_data = self.model(input_ids, return_spikes=True)
+            loss_dict = self.criterion(logits, target_ids, spike_data)
         
-        loss_dict = self.criterion(logits, target_ids, spike_data)
-        total_loss = loss_dict['total']
+        if is_train:
+            self.optimizer.zero_grad()
+            loss_dict['total'].backward()
+            if self.grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.grad_clip_norm)
+            self.optimizer.step()
+            if self.scheduler:
+                self.scheduler.step()
         
-        total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-        self.optimizer.step()
-        self.scheduler.step()
-        
+        # テンソルをitem()で数値に変換して返す
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
+
+    def train_epoch(self, dataloader: DataLoader) -> Dict[str, float]:
+        """1エポック分の学習を実行"""
+        total_metrics = collections.defaultdict(float)
+        num_batches = len(dataloader)
+        
+        for batch in dataloader:
+            metrics = self._run_step(batch, is_train=True)
+            for key, value in metrics.items():
+                total_metrics[key] += value
+        
+        # 各メトリクスの平均値を計算
+        return {key: value / num_batches for key, value in total_metrics.items()}
+
+    def evaluate(self, dataloader: DataLoader) -> Dict[str, float]:
+        """データセット全体でモデルを評価"""
+        total_metrics = collections.defaultdict(float)
+        num_batches = len(dataloader)
+        
+        for batch in dataloader:
+            metrics = self._run_step(batch, is_train=False)
+            for key, value in metrics.items():
+                total_metrics[key] += value
+                
+        return {key: value / num_batches for key, value in total_metrics.items()}
+
+    def save_checkpoint(self, path: str, epoch: int, **kwargs):
+        """モデルのチェックポイントを保存"""
+        state = {
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+        }
+        if self.scheduler:
+            state['scheduler_state_dict'] = self.scheduler.state_dict()
+        
+        state.update(kwargs)
+        # 保存先ディレクトリが存在しない場合は作成
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(state, path)
+        print(f"✅ チェックポイントを '{path}' に保存しました。")
+
+    def load_checkpoint(self, path: str) -> int:
+        """モデルのチェックポイントを読み込む"""
+        if not os.path.exists(path):
+            print(f"⚠️ チェックポイントファイルが見つかりません: {path}")
+            return 0
+            
+        checkpoint = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        if self.scheduler and 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        start_epoch = checkpoint.get('epoch', 0) + 1
+        print(f"✅ チェックポイントを '{path}' から読み込みました。エポック {start_epoch} から再開します。")
+        return start_epoch

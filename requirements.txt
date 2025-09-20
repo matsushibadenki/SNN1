@@ -3,4 +3,6 @@ numpy
 spikingjelly
 datasets
 scikit-learn
+transformers
 tqdm
+pandas

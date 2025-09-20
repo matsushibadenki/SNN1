@@ -224,6 +224,7 @@ class BreakthroughSNN(nn.Module):
         self.layers = nn.ModuleList([EventDrivenSSMLayer(d_model, d_state) for _ in range(num_layers)])
         self.output_projection = nn.Linear(d_model, vocab_size)
 
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     def forward(self, input_ids: torch.Tensor, return_spikes: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         token_emb = self.token_embedding(input_ids)
         spike_sequence = self.spike_encoder(token_emb)

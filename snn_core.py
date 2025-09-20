@@ -250,6 +250,7 @@ class STPSynapse(nn.Module):
 # 4. Event-Driven State Space Model (snn_advanced_optimization.pyより)
 # ----------------------------------------
 
+
 class EventDrivenSSMLayer(nn.Module):
     """
     Event-driven Spiking State Space Model
@@ -297,6 +298,7 @@ class EventDrivenSSMLayer(nn.Module):
         functional.reset_net(self)
         return torch.stack(outputs, dim=1)
 
+
 # ----------------------------------------
 # 5. エネルギー効率最適化 (snn_comprehensive_optimization.pyより)
 # ----------------------------------------
@@ -309,7 +311,67 @@ class EnergyEfficiencyOptimizer:
         spike_rate = spikes.mean()
         return F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spikes.device))
 
+# ----------------------------------------
+# 5. 時間的アテンション機構
+# ----------------------------------------
 
+class SpikingTemporalAttention(nn.Module):
+    """
+    スパイク列の時間的関係性に注意を向けるアテンション機構。
+    各タイムステップの重要度を動的に計算する。
+    """
+    def __init__(self, d_model: int, n_head: int = 4):
+        super().__init__()
+        self.d_model = d_model
+        self.n_head = n_head
+        self.d_head = d_model // n_head
+        assert self.d_head * n_head == self.d_model, "d_model must be divisible by n_head"
+
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x (torch.Tensor): 入力スパイク列 (batch_size, time_steps, seq_len, d_model)
+        
+        Returns:
+            torch.Tensor: アテンション適用後のスパイク列 (batch_size, time_steps, seq_len, d_model)
+        """
+        batch_size, time_steps, seq_len, _ = x.shape
+        
+        # (batch_size, seq_len, time_steps, d_model) に並び替えて時間軸にアテンションを適用
+        x_permuted = x.permute(0, 2, 1, 3).contiguous()
+        x_reshaped = x_permuted.view(batch_size * seq_len, time_steps, self.d_model)
+
+        q = self.q_proj(x_reshaped)
+        k = self.k_proj(x_reshaped)
+        v = self.v_proj(x_reshaped)
+
+        # Multi-headに分割
+        q = q.view(batch_size * seq_len, time_steps, self.n_head, self.d_head).transpose(1, 2)
+        k = k.view(batch_size * seq_len, time_steps, self.n_head, self.d_head).transpose(1, 2)
+        v = v.view(batch_size * seq_len, time_steps, self.n_head, self.d_head).transpose(1, 2)
+
+        # Scaled Dot-Product Attention
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_head)
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        
+        attended_v = torch.matmul(attn_weights, v)
+
+        # ヘッドを結合して元の形状に戻す
+        attended_v = attended_v.transpose(1, 2).contiguous().view(batch_size * seq_len, time_steps, self.d_model)
+        
+        output = self.out_proj(attended_v)
+        output = output.view(batch_size, seq_len, time_steps, self.d_model).permute(0, 2, 1, 3)
+
+        # 残差接続
+        output = x + output
+        
+        return output
+        
 # ----------------------------------------
 # 6. 統合された次世代SNNアーキテクチャ
 # ----------------------------------------

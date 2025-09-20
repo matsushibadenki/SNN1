@@ -261,7 +261,6 @@ def run_training(args: argparse.Namespace, vocab: Vocabulary = None) -> Vocabula
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     # 学習率スケジューラのセットアップ
     scheduler = None
     if args.use_scheduler:
@@ -274,7 +273,6 @@ def run_training(args: argparse.Namespace, vocab: Vocabulary = None) -> Vocabula
         spike_reg_weight=args.spike_reg_weight,
         pad_id=vocab.pad_id
     )
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     trainer = BreakthroughTrainer(model, optimizer, criterion, scheduler=scheduler)
     
@@ -284,12 +282,10 @@ def run_training(args: argparse.Namespace, vocab: Vocabulary = None) -> Vocabula
         # 評価データセットがないため、学習データで代用（過学習のリスクあり）
         val_metrics = trainer.evaluate(dataloader)
         if (epoch + 1) % args.log_interval == 0:
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
             lr = scheduler.get_last_lr()[0] if scheduler else args.learning_rate
             metrics_str = ", ".join([f"train_{k}: {v:.4f}" for k, v in train_metrics.items()])
             metrics_str += ", " + ", ".join([f"val_{k}: {v:.4f}" for k, v in val_metrics.items()])
             print(f"Epoch {epoch+1: >3}/{args.epochs}: {metrics_str}, lr: {lr:.6f}")
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
             
     model_path = args.model_path
     torch.save({
@@ -343,13 +339,11 @@ if __name__ == "__main__":
     parser_train.add_argument("--d_state", type=int, default=32)
     parser_train.add_argument("--num_layers", type=int, default=2)
     parser_train.add_argument("--time_steps", type=int, default=16)
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     # 学習安定化のための引数を追加
     parser_train.add_argument("--seed", type=int, default=42, help="乱数シード")
     parser_train.add_argument("--ce_weight", type=float, default=1.0, help="クロスエントロピー損失の重み")
     parser_train.add_argument("--spike_reg_weight", type=float, default=0.01, help="スパイク正則化損失の重み")
     parser_train.add_argument("--use_scheduler", action='store_true', help="学習率スケジューラを有効にする")
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     # --- 推論コマンド ---
     parser_inference = subparsers.add_parser("inference", help="学習済みモデルで推論（テキスト生成）を実行します")

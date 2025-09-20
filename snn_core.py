@@ -371,7 +371,45 @@ class SpikingTemporalAttention(nn.Module):
         output = x + output
         
         return output
+
+
+# ----------------------------------------
+# 6. 統合された次世代SNNアーキテクチャ
+# ----------------------------------------
+class BreakthroughSNN(nn.Module):
+    """
+    EventDriven-SSMと時間的アテンションを統合した、次世代のSNNアーキテクチャ。
+    """
+    def __init__(self, vocab_size: int, d_model: int = 256, d_state: int = 64, num_layers: int = 4, time_steps: int = 20, n_head: int = 4):
+        super().__init__()
+        self.time_steps = time_steps
         
+        self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.spike_encoder = TTFSEncoder(d_model=d_model, time_steps=time_steps)
+        self.ssm_layers = nn.ModuleList([EventDrivenSSMLayer(d_model, d_state) for _ in range(num_layers)])
+        
+        # 新しく追加した時間的アテンション層
+        self.temporal_attention = SpikingTemporalAttention(d_model=d_model, n_head=n_head)
+        
+        self.output_projection = nn.Linear(d_model, vocab_size)
+
+    def forward(self, input_ids: torch.Tensor, return_spikes: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+        token_emb = self.token_embedding(input_ids)
+        spike_sequence = self.spike_encoder(token_emb)
+        
+        hidden_states = spike_sequence
+        for layer in self.ssm_layers:
+            hidden_states = layer(hidden_states)
+            
+        # SSM層の後にアテンションを適用
+        hidden_states = self.temporal_attention(hidden_states)
+        
+        time_integrated = hidden_states.mean(dim=1)
+        logits = self.output_projection(time_integrated)
+        
+        return logits, hidden_states
+
+
 # ----------------------------------------
 # 6. 統合された次世代SNNアーキテクチャ
 # ----------------------------------------

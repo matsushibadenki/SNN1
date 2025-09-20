@@ -1,3 +1,6 @@
 torch
 numpy
 spikingjelly
+datasets
+scikit-learn
+tqdm

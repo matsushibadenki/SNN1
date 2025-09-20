@@ -137,23 +137,36 @@ class NeuromorphicDeploymentManager:
     def deploy_model(self, model: nn.Module, name: str, optimization_target: str = "balanced"):
         print(f"🔧 ニューロモーフィックデプロイメント開始: {name}")
         
-        sparsity = 0.7 if optimization_target == "balanced" else 0.9
-        bit_width = 8 if optimization_target == "balanced" else 4
+        #◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        if optimization_target == "balanced":
+            sparsity = 0.7
+            bit_width = 8
+        elif optimization_target == "ultra_low_power":
+            sparsity = 0.9
+            bit_width = 8 # 4ビット量子化は現状サポート外のため8に固定
+            print("警告: 4ビット量子化は現在サポートされていません。8ビット量子化にフォールバックします。")
+        else:
+            sparsity = 0.5
+            bit_width = 16
 
         optimized_model = copy.deepcopy(model).cpu()
         optimized_model.eval()
 
+        print(f"  - プルーニング適用中 (スパース率: {sparsity})...")
         self.adaptive_compression.apply_pruning(optimized_model, sparsity)
+        
+        print(f"  - 量子化適用中 (ビット幅: {bit_width}-bit)...")
         # Note: 4-bit quantization is non-trivial and often requires custom kernels.
-        # Here we default to 8-bit.
-        optimized_model = self.adaptive_compression.apply_quantization(optimized_model, 8)
+        # Here we use the bit_width variable.
+        optimized_model = self.adaptive_compression.apply_quantization(optimized_model, bit_width)
+        #◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         self.deployed_models[name] = {
             'model': optimized_model,
             'continual_learner': ContinualLearningEngine(optimized_model)
         }
         print(f"✅ デプロイメント完了: {name}")
-
+        
     def inference(self, name: str, data: torch.Tensor) -> torch.Tensor:
         deployment = self.deployed_models[name]
         start_time = time.time()

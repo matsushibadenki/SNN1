@@ -201,21 +201,7 @@ def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]], pad_id: int) -> T
 # ----------------------------------------
 
 class SNNInferenceEngine:
-    """SNNモデルでテキスト生成や分析を行う推論エンジン"""
-    def __init__(self, model_path: str, device: str = "cpu"):
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"モデルファイルが見つかりません: {model_path}")
-        
-        self.device = torch.device(device)
-        checkpoint = torch.load(model_path, map_location=self.device)
-        
-        self.vocab = checkpoint['vocab']
-        config = checkpoint['config']
-        
-        self.model = BreakthroughSNN(vocab_size=self.vocab.vocab_size, **config).to(self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.model.eval()
-        
+    # ... (前略) ...
     def generate(self, start_text: str, max_len: int = 20) -> str:
         # print(f"\n生成開始: '{start_text}'") # ベンチマーク中はログを抑制
         
@@ -226,7 +212,10 @@ class SNNInferenceEngine:
         
         with torch.no_grad():
             for _ in range(max_len):
-                logits, _ = self.model(input_tensor, return_spikes=True) # 修正: 戻り値の形式に合わせる
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+                # モデルがタプル(logits, spikes)を返すように変更したため、logitsのみを取得
+                logits, _ = self.model(input_tensor, return_spikes=True)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 next_token_logits = logits[:, -1, :]
                 next_token_id = torch.argmax(next_token_logits, dim=-1).item()
                 

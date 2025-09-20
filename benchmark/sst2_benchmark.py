@@ -1,31 +1,39 @@
-# matsushibadenki/snn/benchmark/sst2_benchmark.py
+# matsushibadenki/snn/benchmark/sst2_benchmark.pyの修正
 #
 # GLUEベンチマーク (SST-2タスク) を用いたSNNモデルの性能評価スクリプト
 #
 # 目的:
-# - ロードマップ フェーズ1「1.1. ベンチマーク環境の構築」に対応。
-# - 標準的なNLPタスクにおけるモデルの性能を客観的かつ定量的に評価する基盤を確立する。
+# - ロードマップ フェーズ1「1.1. ベンチマーク環境の構築」「1.2. ANNベースラインとの比較」に対応。
+# - 標準的なNLPタスクにおけるSNNモデルの性能を、ANNモデルと比較して客観的かつ定量的に評価する。
 #
 # 機能:
 # 1. Hugging Face `datasets`ライブラリからSST-2データセットを自動ダウンロード。
-# 2. データセットをSNNモデルが学習可能な.jsonl形式に前処理・変換。
-# 3. main.pyの学習・推論ロジックを呼び出し、モデルの訓練と評価を実行。
-# 4. scikit-learnを使用し、テストデータに対する正解率(Accuracy)を計算・表示。
+# 2. データセットをSNN/ANNモデルが学習可能な形式に前処理・変換。
+# 3. SNNモデルの学習と評価を実行。
+# 4. ANNベースラインモデルの学習と評価を実行。
+# 5. 両モデルの性能指標（正解率、推論時間）を並べて表示し、比較を容易にする。
 
 import os
 import json
+import time
+import pandas as pd
 from datasets import load_dataset
 from sklearn.metrics import accuracy_score
 from tqdm import tqdm
 import sys
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
 
 # 親ディレクトリをsys.pathに追加して、mainやsnn_coreをインポート可能にする
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from main import run_training, SNNInferenceEngine
-from snn_core import Vocabulary
+from main import run_training, SNNInferenceEngine, Vocabulary, collate_fn
+from benchmark.ann_baseline import ANNBaselineModel
 
+# ----------------------------------------
+# 1. データ準備
+# ----------------------------------------
 def prepare_sst2_data(output_dir: str = "data"):
     """
     SST-2データセットをダウンロードし、.jsonl形式に変換して保存する。
@@ -37,94 +45,197 @@ def prepare_sst2_data(output_dir: str = "data"):
     dataset = load_dataset("glue", "sst2")
 
     data_paths = {}
-    for split in ["train", "validation", "test"]:
+    for split in ["train", "validation"]: # testスプリットはラベルがないため除外
         jsonl_path = os.path.join(output_dir, f"sst2_{split}.jsonl")
         data_paths[split] = jsonl_path
         
+        if os.path.exists(jsonl_path):
+            print(f"'{split}' split already exists at {jsonl_path}. Skipping preparation.")
+            continue
+            
         print(f"Processing '{split}' split -> {jsonl_path}")
         with open(jsonl_path, 'w', encoding='utf-8') as f:
             for example in tqdm(dataset[split]):
-                # ラベルをテキストに変換（学習時にはテキスト全体で語彙を構築するため）
-                # ここでは簡単化のため、テキストとラベルを結合した形式にはせず、
-                # instruction形式として扱う
-                instruction = "Classify the sentiment of the following sentence."
-                output = "positive" if example['label'] == 1 else "negative"
-                
                 record = {
-                    "instruction": instruction,
-                    "input": example['sentence'],
-                    "output": output
+                    "sentence": example['sentence'],
+                    "label": example['label'] 
                 }
                 f.write(json.dumps(record) + "\n")
     
     print("✅ SST-2 data preparation complete.")
     return data_paths
 
-def run_benchmark(data_paths: dict, model_path: str):
-    """
-    準備されたデータでモデルの学習と評価を行う。
-    """
-    print("\n🚀 Starting SST-2 Benchmark...")
+# ----------------------------------------
+# 2. SNNモデルのベンチマーク
+# ----------------------------------------
+def run_snn_benchmark(data_paths: dict, model_path: str, vocab: Vocabulary):
+    """準備されたデータでSNNモデルの学習と評価を行う。"""
+    print("\n" + "="*20 + " 🚀 Starting SNN Benchmark " + "="*20)
 
     # --- 1. Training ---
-    print("\n🔥 Step 1: Training the model on SST-2 train set...")
-    # main.run_trainingを呼び出すための擬似的な引数オブジェクトを作成
+    print("\n🔥 Step 1: Training the SNN model on SST-2 train set...")
     train_args = type('Args', (), {
         'data_path': data_paths['train'],
-        'data_format': 'instruction',
-        'epochs': 5, # ベンチマークのためエポック数は少なく設定
+        'data_format': 'instruction', # データ形式をinstructionに偽装して流用
+        'epochs': 3, 
         'batch_size': 16,
         'learning_rate': 1e-4,
         'log_interval': 1,
         'model_path': model_path,
-        'd_model': 64,
-        'd_state': 32,
-        'num_layers': 2,
-        'time_steps': 16
+        'd_model': 64, 'd_state': 32, 'num_layers': 2, 'time_steps': 16
     })()
     
-    vocab = run_training(train_args)
-    print("✅ Model training complete.")
+    # データをInstruction形式に変換するラッパー
+    def convert_to_instruction_format(original_path, new_path):
+        with open(original_path, 'r') as fin, open(new_path, 'w') as fout:
+            for line in fin:
+                item = json.loads(line)
+                instruction = "Classify the sentiment of the following sentence."
+                output = "positive" if item['label'] == 1 else "negative"
+                fout.write(json.dumps({"instruction": instruction, "input": item['sentence'], "output": output}) + "\n")
+    
+    train_inst_path = data_paths['train'].replace('.jsonl', '_inst.jsonl')
+    convert_to_instruction_format(data_paths['train'], train_inst_path)
+    train_args.data_path = train_inst_path
+    
+    run_training(train_args, vocab)
+    print("✅ SNN Model training complete.")
 
     # --- 2. Evaluation ---
-    print("\n📊 Step 2: Evaluating the model on SST-2 validation set...")
+    print("\n📊 Step 2: Evaluating the SNN model on SST-2 validation set...")
     engine = SNNInferenceEngine(model_path=model_path)
     
-    true_labels = []
-    pred_labels = []
+    true_labels, pred_labels, latencies = [], [], []
 
-    validation_data = []
     with open(data_paths['validation'], 'r', encoding='utf-8') as f:
-        for line in f:
-            validation_data.append(json.loads(line))
+        validation_data = [json.loads(line) for line in f]
 
-    for item in tqdm(validation_data, desc="Evaluating"):
-        prompt = f"{item['instruction']}\n{item['input']}"
-        generated_text = engine.generate(prompt, max_len=3) # "positive" or "negative"
+    for item in tqdm(validation_data, desc="SNN Evaluating"):
+        prompt = f"Classify the sentiment of the following sentence.\n{item['sentence']}"
         
-        # 生成されたテキストから予測ラベルを決定
-        if "positive" in generated_text:
-            predicted_label = "positive"
-        elif "negative" in generated_text:
-            predicted_label = "negative"
-        else:
-            predicted_label = "unknown" # 生成がうまくいかなかった場合
+        start_time = time.time()
+        generated_text = engine.generate(prompt, max_len=3)
+        latencies.append((time.time() - start_time) * 1000) # ms
 
-        true_labels.append(item['output'])
-        pred_labels.append(predicted_label)
+        pred_labels.append(1 if "positive" in generated_text else 0)
+        true_labels.append(item['label'])
         
     # --- 3. Calculate Metrics ---
     accuracy = accuracy_score(true_labels, pred_labels)
+    avg_latency = sum(latencies) / len(latencies)
     
-    print("\n🎉 Benchmark Results:")
-    print("=" * 30)
-    print(f"  Validation Accuracy: {accuracy:.4f}")
-    print("=" * 30)
+    print(f"  SNN Validation Accuracy: {accuracy:.4f}")
+    print(f"  SNN Average Inference Time: {avg_latency:.2f} ms")
+    return {"model": "BreakthroughSNN", "accuracy": accuracy, "avg_latency_ms": avg_latency}
 
-if __name__ == "__main__":
-    # データ準備
-    prepared_data_paths = prepare_sst2_data()
+# ----------------------------------------
+# 3. ANNベースラインのベンチマーク
+# ----------------------------------------
+class SST2Dataset(Dataset):
+    def __init__(self, file_path, vocab):
+        self.vocab = vocab
+        with open(file_path, 'r', encoding='utf-8') as f:
+            self.data = [json.loads(line) for line in f]
+    def __len__(self): return len(self.data)
+    def __getitem__(self, idx):
+        text = self.data[idx]['sentence']
+        encoded = self.vocab.encode(text, add_start_end=False)
+        return torch.tensor(encoded, dtype=torch.long), self.data[idx]['label']
+
+def run_ann_training_and_eval(data_paths: dict, vocab: Vocabulary, model_params: dict):
+    """ANNベースラインモデルの学習と評価を行う。"""
+    print("\n" + "="*20 + " 📊 Starting ANN Benchmark " + "="*20)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # --- 1. DataLoaders ---
+    train_dataset = SST2Dataset(data_paths['train'], vocab)
+    val_dataset = SST2Dataset(data_paths['validation'], vocab)
+
+    def ann_collate_fn(batch):
+        inputs, targets = zip(*batch)
+        padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=vocab.pad_id)
+        return padded_inputs, torch.tensor(targets, dtype=torch.long)
+
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=ann_collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=ann_collate_fn)
+
+    # --- 2. Model, Optimizer, Loss ---
+    model = ANNBaselineModel(vocab_size=vocab.vocab_size, **model_params).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    criterion = nn.CrossEntropyLoss()
     
-    # ベンチマーク実行
-    output_model_path = "breakthrough_snn_sst2.pth"
-    run_benchmark(prepared_data_paths, output_model_path)
+    print(f"ANN Model Parameters: {sum(p.numel() for p in model.parameters())}")
+
+    # --- 3. Training Loop ---
+    print("\n🔥 Step 1: Training the ANN model...")
+    for epoch in range(3): # SNNとエポック数を合わせる
+        model.train()
+        for inputs, targets in tqdm(train_loader, desc=f"ANN Epoch {epoch+1}"):
+            inputs, targets = inputs.to(device), targets.to(device)
+            padding_mask = (inputs == vocab.pad_id)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs, padding_mask)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+    print("✅ ANN Model training complete.")
+            
+    # --- 4. Evaluation ---
+    print("\n📊 Step 2: Evaluating the ANN model...")
+    model.eval()
+    true_labels, pred_labels, latencies = [], [], []
+    with torch.no_grad():
+        for inputs, targets in tqdm(val_loader, desc="ANN Evaluating"):
+            inputs, targets = inputs.to(device), targets.to(device)
+            padding_mask = (inputs == vocab.pad_id)
+            
+            start_time = time.time()
+            outputs = model(inputs, padding_mask)
+            latencies.append((time.time() - start_time) * 1000)
+            
+            preds = torch.argmax(outputs, dim=1)
+            pred_labels.extend(preds.cpu().numpy())
+            true_labels.extend(targets.cpu().numpy())
+    
+    # --- 5. Calculate Metrics ---
+    accuracy = accuracy_score(true_labels, pred_labels)
+    # 1バッチあたりの平均レイテンシ
+    avg_latency = sum(latencies) / len(latencies)
+
+    print(f"  ANN Validation Accuracy: {accuracy:.4f}")
+    print(f"  ANN Average Inference Time (per batch): {avg_latency:.2f} ms")
+    return {"model": "ANN Baseline", "accuracy": accuracy, "avg_latency_ms": avg_latency}
+
+# ----------------------------------------
+# 4. メイン実行ブロック
+# ----------------------------------------
+if __name__ == "__main__":
+    # --- 準備 ---
+    pd.set_option('display.precision', 4)
+    data_paths = prepare_sst2_data()
+    snn_model_path = "breakthrough_snn_sst2.pth"
+    
+    # 共通の語彙を構築
+    vocab = Vocabulary()
+    print("\n📖 Building shared vocabulary from training data...")
+    with open(data_paths['train'], 'r', encoding='utf-8') as f:
+        all_texts = (json.loads(line)['sentence'] for line in f)
+        vocab.build_vocab(all_texts)
+    print(f"✅ Vocabulary built. Size: {vocab.vocab_size}")
+
+    # --- SNNベンチマーク実行 ---
+    snn_results = run_snn_benchmark(data_paths, snn_model_path, vocab)
+
+    # --- ANNベンチマーク実行 ---
+    ann_model_params = {'d_model': 64, 'nhead': 2, 'd_hid': 128, 'nlayers': 2}
+    ann_results = run_ann_training_and_eval(data_paths, vocab, ann_model_params)
+    
+    # --- 結果の比較 ---
+    print("\n\n" + "="*25 + " 🏆 Final Benchmark Results " + "="*25)
+    results_df = pd.DataFrame([snn_results, ann_results])
+    print(results_df.to_string(index=False))
+    print("="*75)
+    
+    # 注: SNNのレイテンシは1文ごと、ANNは1バッチごとのため直接比較はできない点に注意。
+    # ANNの方がベクトル化演算によりバッチ処理で高速になる傾向がある。

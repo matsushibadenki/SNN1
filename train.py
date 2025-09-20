@@ -1,8 +1,8 @@
 # matsushibadenki/snn/train.py
-# DIコンテナを利用した、統合学習実行スクリプト (修正版)
+# DIコンテナを利用した、統合学習実行スクリプト (最終修正版)
 #
 # 変更点:
-# - Trainerの取得方法をコンテナの仕様に合わせて修正。
+# - snn_modelのインスタンス化時に、設定ファイルから読み込んだモデル設定を正しく渡すように修正。
 
 import os
 import argparse
@@ -98,7 +98,7 @@ def main_worker(rank, world_size, container, args):
     model_config.pop('path', None)
     
     # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-    model = container.snn_model(vocab_size=vocab.vocab_size).to(device)
+    model = container.snn_model(vocab_size=vocab.vocab_size, **model_config).to(device)
     # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if is_distributed: model = DDP(model, device_ids=[rank])
@@ -109,11 +109,8 @@ def main_worker(rank, world_size, container, args):
     container.standard_loss.kwargs['pad_id'] = vocab.pad_id
     container.distillation_loss.kwargs['student_pad_id'] = vocab.pad_id
     
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-    # trainerプロバイダを取得し、引数を渡してインスタンス化
     trainer_provider = container.trainer(model=model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
     trainer = trainer_provider()
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if rank in [-1, 0]: print(f"\n🔥 {container.config.training.type()} 学習を開始します...")
     for epoch in range(container.config.training.epochs()):

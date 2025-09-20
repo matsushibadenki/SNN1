@@ -1,4 +1,4 @@
-# /path/to/your/project/main.py
+# matsushibadenki/snn/main.pyの修正
 # SNNモデルの学習と推論を実行するためのメインスクリプト (データ形式仕様書v1.0対応版)
 #
 # 改善点:
@@ -6,6 +6,7 @@
 # - --data_format引数を導入し、'simple_text', 'dialogue', 'instruction'の形式を動的に切り替え可能に。
 # - データセット部分を抽象化し、各形式に対応する専用のDatasetクラスを実装。
 # - 語彙構築プロセスを汎用化し、複雑なデータ構造からもテキストを抽出できるように改善。
+# - ベンチマークスクリプトから呼び出せるように学習ロジックを関数化。
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -171,9 +172,11 @@ def create_dataset(data_format: DataFormat, file_path: str, vocab: Vocabulary) -
         DataFormat.DIALOGUE: DialogueDataset,
         DataFormat.INSTRUCTION: InstructionDataset
     }
-    if data_format not in format_map:
+    # data_formatが文字列で渡される場合も考慮
+    data_format_enum = DataFormat(data_format) if isinstance(data_format, str) else data_format
+    if data_format_enum not in format_map:
         raise ValueError(f"サポートされていないデータ形式です: {data_format}")
-    return format_map[data_format](file_path, vocab)
+    return format_map[data_format_enum](file_path, vocab)
 
 def get_text_extractor(data_format: DataFormat) -> callable:
     """データ形式に応じたテキスト抽出関数を取得"""
@@ -182,7 +185,9 @@ def get_text_extractor(data_format: DataFormat) -> callable:
         DataFormat.DIALOGUE: DialogueDataset.extract_texts,
         DataFormat.INSTRUCTION: InstructionDataset.extract_texts
     }
-    return format_map[data_format]
+    # data_formatが文字列で渡される場合も考慮
+    data_format_enum = DataFormat(data_format) if isinstance(data_format, str) else data_format
+    return format_map[data_format_enum]
 
 def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]], pad_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
     """可変長のシーケンスをパディングするためのCollate関数"""
@@ -212,7 +217,7 @@ class SNNInferenceEngine:
         self.model.eval()
         
     def generate(self, start_text: str, max_len: int = 20) -> str:
-        print(f"\n生成開始: '{start_text}'")
+        # print(f"\n生成開始: '{start_text}'") # ベンチマーク中はログを抑制
         
         input_ids = self.vocab.encode(start_text, add_start_end=True)[:-1] # ENDトークンは不要
         input_tensor = torch.tensor([input_ids], device=self.device)
@@ -221,7 +226,7 @@ class SNNInferenceEngine:
         
         with torch.no_grad():
             for _ in range(max_len):
-                logits = self.model(input_tensor)
+                logits, _ = self.model(input_tensor, return_spikes=True) # 修正: 戻り値の形式に合わせる
                 next_token_logits = logits[:, -1, :]
                 next_token_id = torch.argmax(next_token_logits, dim=-1).item()
                 
@@ -237,9 +242,12 @@ class SNNInferenceEngine:
 # 5. 実行ブロック
 # ----------------------------------------
 
-def train(args):
-    """モデルの学習を実行"""
-    print(f"🚀 革新的SNNシステムの訓練開始 (データ形式: {args.data_format.value})")
+def run_training(args: argparse.Namespace) -> Vocabulary:
+    """
+    モデルの学習を実行し、学習済みの語彙を返す。
+    外部スクリプト（ベンチマークなど）からの呼び出しを想定。
+    """
+    print(f"🚀 革新的SNNシステムの訓練開始 (データ形式: {args.data_format})")
     
     try:
         # データから語彙を構築
@@ -258,10 +266,10 @@ def train(args):
     except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
         print(f"❌ エラー: データファイルの読み込みまたは処理に失敗しました。\n詳細: {e}")
         print("ヒント: --data_format 引数がファイルの内容と一致しているか、.jsonl ファイルが仕様書通りか確認してください。")
-        return
+        raise e
 
     # モデル設定
-    config = {'d_model': 64, 'd_state': 32, 'num_layers': 2, 'time_steps': 16}
+    config = {'d_model': args.d_model, 'd_state': args.d_state, 'num_layers': args.num_layers, 'time_steps': args.time_steps}
     model = BreakthroughSNN(vocab_size=vocab.vocab_size, **config)
     
     # 汎用Trainerのセットアップ
@@ -272,9 +280,11 @@ def train(args):
     # 学習ループ
     print("\n🔥 学習を開始します...")
     for epoch in range(args.epochs):
-        metrics = trainer.train_epoch(dataloader)
+        train_metrics = trainer.train_epoch(dataloader)
+        val_metrics = trainer.evaluate(dataloader) # 評価も追加
         if (epoch + 1) % args.log_interval == 0:
-            metrics_str = ", ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
+            metrics_str = ", ".join([f"train_{k}: {v:.4f}" for k, v in train_metrics.items()])
+            metrics_str += ", " + ", ".join([f"val_{k}: {v:.4f}" for k, v in val_metrics.items()])
             print(f"Epoch {epoch+1: >3}/{args.epochs}: {metrics_str}")
             
     # モデル保存
@@ -285,9 +295,11 @@ def train(args):
         'config': config
     }, model_path)
     print(f"\n✅ 学習済みモデルを '{model_path}' に保存しました。")
+    return vocab
 
-def inference(args):
-    """学習済みモデルで推論（文章生成）を実行"""
+
+def start_inference_cli(args):
+    """学習済みモデルで推論（文章生成）を実行するためのCLI"""
     try:
         engine = SNNInferenceEngine(model_path=args.model_path)
         
@@ -301,9 +313,10 @@ def inference(args):
 
     except FileNotFoundError as e:
         print(f"❌ {e}")
-        print(f"エラー: 学習済みモデルファイル({args.model_path})が必要です。先に 'train' モードで実行してください。")
+        print(f"エラー: 学習済みモデルファイル({args.model_path})が必要です。先に 'train' コマンドで実行してください。")
     except Exception as e:
         print(f"❌ 予期せぬエラーが発生しました: {e}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SNNベース AIチャットシステム (データ形式仕様書v1.0対応)")
@@ -324,13 +337,20 @@ if __name__ == "__main__":
     parser_train.add_argument("--learning_rate", type=float, default=5e-4, help="学習率")
     parser_train.add_argument("--log_interval", type=int, default=10, help="ログを表示するエポック間隔")
     parser_train.add_argument("--model_path", type=str, default="breakthrough_snn_model.pth", help="学習済みモデルの保存パス")
-    parser_train.set_defaults(func=train)
-
+    # モデル設定の引数を追加
+    parser_train.add_argument("--d_model", type=int, default=64)
+    parser_train.add_argument("--d_state", type=int, default=32)
+    parser_train.add_argument("--num_layers", type=int, default=2)
+    parser_train.add_argument("--time_steps", type=int, default=16)
+    
     # --- 推論コマンド ---
     parser_inference = subparsers.add_parser("inference", help="学習済みモデルで推論（テキスト生成）を実行します")
     parser_inference.add_argument("--model_path", type=str, default="breakthrough_snn_model.pth", help="学習済みモデルのパス")
     parser_inference.add_argument("--max_len", type=int, default=40, help="生成するテキストの最大長")
-    parser_inference.set_defaults(func=inference)
 
     args = parser.parse_args()
-    args.func(args)
+
+    if args.command == "train":
+        run_training(args)
+    elif args.command == "inference":
+        start_inference_cli(args)

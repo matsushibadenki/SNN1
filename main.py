@@ -239,7 +239,6 @@ def run_training(args: argparse.Namespace, vocab: Vocabulary = None) -> Vocabula
     print(f"🚀 革新的SNNシステムの訓練開始 (データ形式: {args.data_format})")
     
     try:
-        # 語彙が提供されていない場合は、データから新規に構築
         if vocab is None:
             vocab = Vocabulary()
             print("📖 語彙を構築中...")
@@ -247,10 +246,26 @@ def run_training(args: argparse.Namespace, vocab: Vocabulary = None) -> Vocabula
             vocab.build_vocab(text_extractor(args.data_path))
             print(f"✅ 語彙を構築しました。語彙数: {vocab.vocab_size}")
 
-        dataset = create_dataset(args.data_format, args.data_path, vocab)
+        full_dataset = create_dataset(args.data_format, args.data_path, vocab)
+        
+        # データの90%を学習、10%を検証用に分割
+        val_split = int(len(full_dataset) * 0.1)
+        if val_split > 0:
+            train_dataset, val_dataset = random_split(full_dataset, [len(full_dataset) - val_split, val_split])
+            print(f"✅ データセットを分割しました: 学習用 {len(train_dataset)}件, 検証用 {len(val_dataset)}件")
+        else:
+            train_dataset = full_dataset
+            val_dataset = None # 検証データがない場合はNone
+            print("✅ データセットを読み込みました。データ数が少ないため、検証用データの分割は行いません。")
+
+
         custom_collate_fn = lambda batch: collate_fn(batch, vocab.pad_id)
-        dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, collate_fn=custom_collate_fn, num_workers=2)
-        print(f"✅ {args.data_path} から {len(dataset)} 件のデータを読み込みました。")
+        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=custom_collate_fn, num_workers=2)
+        
+        if val_dataset:
+            val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=custom_collate_fn, num_workers=2)
+        else:
+            val_dataloader = train_dataloader # フォールバックとして学習データを使用
 
     except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
         print(f"❌ エラー: データファイルの読み込みまたは処理に失敗しました。\n詳細: {e}")
@@ -279,9 +294,8 @@ def run_training(args: argparse.Namespace, vocab: Vocabulary = None) -> Vocabula
     
     print("\n🔥 学習を開始します...")
     for epoch in range(args.epochs):
-        train_metrics = trainer.train_epoch(dataloader)
-        # 評価データセットがないため、学習データで代用（過学習のリスクあり）
-        val_metrics = trainer.evaluate(dataloader)
+        train_metrics = trainer.train_epoch(train_dataloader)
+        val_metrics = trainer.evaluate(val_dataloader)
         if (epoch + 1) % args.log_interval == 0:
             lr = scheduler.get_last_lr()[0] if scheduler else args.learning_rate
             metrics_str = ", ".join([f"train_{k}: {v:.4f}" for k, v in train_metrics.items()])

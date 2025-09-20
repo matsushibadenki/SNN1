@@ -2,7 +2,7 @@
 # DIコンテナを利用した、統合学習実行スクリプト (修正版)
 #
 # 変更点:
-# - 知識蒸留時に使用する専用のDatasetクラスを追加し、collate_fnのバグを修正。
+# - Trainerの取得方法をコンテナの仕様に合わせて修正。
 
 import os
 import argparse
@@ -17,7 +17,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from app.containers import TrainingContainer
 from snn_research.data.datasets import DataFormat, Vocabulary, get_dataset_class
 
-# --- (set_seed, collate_fn のコードは変更なし) ---
+# --- (set_seed, collate_fn, DistillationDataset, distillation_collate_fn のコードは変更なし) ---
 def set_seed(seed: int):
     import random
     import numpy as np
@@ -33,9 +33,7 @@ def collate_fn(batch, pad_id):
     padded_targets = pad_sequence(targets, batch_first=True, padding_value=pad_id)
     return padded_inputs, padded_targets
 
-# --- 知識蒸留専用のデータセットとCollate Function ---
 class DistillationDataset(Dataset):
-    """知識蒸留用のシンプルなテキストデータセット"""
     def __init__(self, file_path: str):
         with open(file_path, 'r', encoding='utf-8') as f:
             self.data = [json.loads(line)['text'] for line in f if line.strip()]
@@ -97,20 +95,25 @@ def main_worker(rank, world_size, container, args):
 
     device = f"cuda:{rank}" if is_distributed else container.config.device()
     model_config = container.config.model.to_dict()
-    # configからpathキーを削除
     model_config.pop('path', None)
-    model = container.snn_model(vocab_size=vocab.vocab_size, **model_config).to(device)
+    
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    model = container.snn_model(vocab_size=vocab.vocab_size).to(device)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if is_distributed: model = DDP(model, device_ids=[rank])
     
     optimizer = container.optimizer(params=model.parameters())
     scheduler = container.scheduler(optimizer=optimizer) if container.config.training.use_scheduler() else None
 
-    # pad_idを損失関数に設定
     container.standard_loss.kwargs['pad_id'] = vocab.pad_id
     container.distillation_loss.kwargs['student_pad_id'] = vocab.pad_id
     
-    trainer = container.trainer_factory(model=model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    # trainerプロバイダを取得し、引数を渡してインスタンス化
+    trainer_provider = container.trainer(model=model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
+    trainer = trainer_provider()
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if rank in [-1, 0]: print(f"\n🔥 {container.config.training.type()} 学習を開始します...")
     for epoch in range(container.config.training.epochs()):

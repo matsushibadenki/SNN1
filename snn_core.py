@@ -15,6 +15,7 @@
 # - STDP, STP, メタ可塑性などの生物学的可塑性メカニズムを統合。
 # - 評価時に正解率(Accuracy)を計算する機能を追加。
 # - 学習スケジューラをエポックごとに更新するように修正。
+# - 重複していたBreakthroughSNNの定義を、時間的アテンションを含む先進的なアーキテクチャに統一。
 
 import torch
 import torch.nn as nn
@@ -388,7 +389,7 @@ class BreakthroughSNN(nn.Module):
         self.spike_encoder = TTFSEncoder(d_model=d_model, time_steps=time_steps)
         self.ssm_layers = nn.ModuleList([EventDrivenSSMLayer(d_model, d_state) for _ in range(num_layers)])
         
-        # 新しく追加した時間的アテンション層
+        # 時間的アテンション層
         self.temporal_attention = SpikingTemporalAttention(d_model=d_model, n_head=n_head)
         
         self.output_projection = nn.Linear(d_model, vocab_size)
@@ -407,38 +408,6 @@ class BreakthroughSNN(nn.Module):
         time_integrated = hidden_states.mean(dim=1)
         logits = self.output_projection(time_integrated)
         
-        return logits, hidden_states
-
-
-# ----------------------------------------
-# 6. 統合された次世代SNNアーキテクチャ
-# ----------------------------------------
-
-class BreakthroughSNN(nn.Module):
-    """
-    EventDriven-SSMを中核に据えた、次世代のSNNアーキテクチャ。
-    """
-    def __init__(self, vocab_size: int, d_model: int = 256, d_state: int = 64, num_layers: int = 4, time_steps: int = 20):
-        super().__init__()
-        self.time_steps = time_steps
-        
-        self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.spike_encoder = TTFSEncoder(d_model=d_model, time_steps=time_steps)
-        self.layers = nn.ModuleList([EventDrivenSSMLayer(d_model, d_state) for _ in range(num_layers)])
-        self.output_projection = nn.Linear(d_model, vocab_size)
-
-    def forward(self, input_ids: torch.Tensor, return_spikes: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
-        token_emb = self.token_embedding(input_ids)
-        spike_sequence = self.spike_encoder(token_emb)
-        
-        hidden_states = spike_sequence
-        for layer in self.layers:
-            hidden_states = layer(hidden_states)
-        
-        time_integrated = hidden_states.mean(dim=1)
-        logits = self.output_projection(time_integrated)
-        
-        # 常に (logits, hidden_states) のタプルを返すように統一
         return logits, hidden_states
 
 # ----------------------------------------
@@ -479,7 +448,8 @@ class BreakthroughTrainer:
         criterion: nn.Module,
         scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        grad_clip_norm: float = 1.0
+        grad_clip_norm: float = 1.0,
+        rank: int = -1 # for distributed training
     ):
         self.model = model.to(device)
         self.device = device
@@ -487,6 +457,7 @@ class BreakthroughTrainer:
         self.scheduler = scheduler
         self.criterion = criterion
         self.grad_clip_norm = grad_clip_norm
+        self.rank = rank
 
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
         self.model.train(is_train)
@@ -518,50 +489,67 @@ class BreakthroughTrainer:
     def train_epoch(self, dataloader: DataLoader) -> Dict[str, float]:
         total_metrics = collections.defaultdict(float)
         num_batches = len(dataloader)
-        for batch in tqdm(dataloader, desc="Training"):
+        
+        # tqdmの表示をrank 0のみに限定
+        progress_bar = tqdm(dataloader, desc="Training", disable=(self.rank not in [-1, 0]))
+        
+        for batch in progress_bar:
             metrics = self._run_step(batch, is_train=True)
             for key, value in metrics.items():
                 total_metrics[key] += value
 
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-        # エポックの終わりにスケジューラを更新
         if self.scheduler:
             self.scheduler.step()
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
         return {key: value / num_batches for key, value in total_metrics.items()}
 
     def evaluate(self, dataloader: DataLoader) -> Dict[str, float]:
         total_metrics = collections.defaultdict(float)
         num_batches = len(dataloader)
-        for batch in tqdm(dataloader, desc="Evaluating"):
+        
+        progress_bar = tqdm(dataloader, desc="Evaluating", disable=(self.rank not in [-1, 0]))
+
+        for batch in progress_bar:
             metrics = self._run_step(batch, is_train=False)
             for key, value in metrics.items():
                 total_metrics[key] += value
         return {key: value / num_batches for key, value in total_metrics.items()}
 
     def save_checkpoint(self, path: str, epoch: int, **kwargs):
+        # DDPモデルの場合、moduleを保存する
+        model_state_dict = self.model.module.state_dict() if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model.state_dict()
+
         state = {
             'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': model_state_dict,
             'optimizer_state_dict': self.optimizer.state_dict(),
         }
         if self.scheduler:
             state['scheduler_state_dict'] = self.scheduler.state_dict()
         state.update(kwargs)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(state, path)
-        print(f"✅ チェックポイントを '{path}' に保存しました。")
+
+        # rank 0 のプロセスのみが保存を実行
+        if self.rank in [-1, 0]:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            torch.save(state, path)
+            print(f"✅ チェックポイントを '{path}' に保存しました。")
 
     def load_checkpoint(self, path: str) -> int:
         if not os.path.exists(path):
             print(f"⚠️ チェックポイントファイルが見つかりません: {path}")
             return 0
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+            
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % self.rank} if self.rank != -1 else self.device
+        checkpoint = torch.load(path, map_location=map_location)
+        
+        model_to_load = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+        model_to_load.load_state_dict(checkpoint['model_state_dict'])
+        
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         if self.scheduler and 'scheduler_state_dict' in checkpoint:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            
         start_epoch = checkpoint.get('epoch', 0) + 1
-        print(f"✅ チェックポイントを '{path}' から読み込みました。エポック {start_epoch} から再開します。")
+        if self.rank in [-1, 0]:
+            print(f"✅ チェックポイントを '{path}' から読み込みました。エポック {start_epoch} から再開します。")
         return start_epoch

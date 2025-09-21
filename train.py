@@ -13,6 +13,9 @@ from torch.utils.data import DataLoader, random_split, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.utils.rnn import pad_sequence
 from torch.nn.parallel import DistributedDataParallel as DDP
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+from functools import partial
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 from app.containers import TrainingContainer
 from snn_research.data.datasets import DataFormat, Vocabulary, get_dataset_class
@@ -85,10 +88,12 @@ def main_worker(rank, world_size, container, args):
     
     sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True) if is_distributed else None
     
-    _collate_fn = lambda b: collate_fn(b, vocab.pad_id)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    _collate_fn = partial(collate_fn, pad_id=vocab.pad_id)
     if is_distillation:
         teacher_tokenizer = container.teacher_tokenizer()
-        _collate_fn = lambda b: distillation_collate_fn(b, vocab, teacher_tokenizer)
+        _collate_fn = partial(distillation_collate_fn, student_vocab=vocab, teacher_tokenizer=teacher_tokenizer)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     dataloader = DataLoader(train_dataset, batch_size=container.config.training.batch_size(),
                               sampler=sampler, collate_fn=_collate_fn, num_workers=2, shuffle=(sampler is None))
@@ -128,7 +133,6 @@ def main_worker(rank, world_size, container, args):
     container.standard_loss.kwargs['pad_id'] = vocab.pad_id
     container.distillation_loss.kwargs['student_pad_id'] = vocab.pad_id
     
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     # --- 学習タイプに応じてTrainerを選択してインスタンス化 ---
     trainer_args = {
         "model": model, "optimizer": optimizer, "scheduler": scheduler,
@@ -138,7 +142,6 @@ def main_worker(rank, world_size, container, args):
         trainer = container.distillation_trainer(**trainer_args)
     else:
         trainer = container.standard_trainer(**trainer_args)
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if rank in [-1, 0]: print(f"\n🔥 {container.config.training.type()} 学習を開始します...")
     for epoch in range(container.config.training.epochs()):

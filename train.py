@@ -111,7 +111,6 @@ def main_worker(rank, world_size, container, args):
     # DIコンテナに設定済みのパラメータを利用し、動的に必要なvocab_sizeのみを渡す
     model = container.snn_model(vocab_size=vocab.vocab_size).to(device)
     
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     # チェックポイント保存用にモデル設定をコンテナから直接取得
     model_config = {
         'd_model': container.config.model.d_model(),
@@ -120,7 +119,6 @@ def main_worker(rank, world_size, container, args):
         'time_steps': container.config.model.time_steps(),
         'n_head': container.config.model.n_head(),
     }
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if is_distributed: model = DDP(model, device_ids=[rank])
     
@@ -130,8 +128,17 @@ def main_worker(rank, world_size, container, args):
     container.standard_loss.kwargs['pad_id'] = vocab.pad_id
     container.distillation_loss.kwargs['student_pad_id'] = vocab.pad_id
     
-    trainer_provider = container.get_trainer_factory(model=model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
-    trainer = trainer_provider()
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    # --- 学習タイプに応じてTrainerを選択してインスタンス化 ---
+    trainer_args = {
+        "model": model, "optimizer": optimizer, "scheduler": scheduler,
+        "device": device, "rank": rank,
+    }
+    if is_distillation:
+        trainer = container.distillation_trainer(**trainer_args)
+    else:
+        trainer = container.standard_trainer(**trainer_args)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if rank in [-1, 0]: print(f"\n🔥 {container.config.training.type()} 学習を開始します...")
     for epoch in range(container.config.training.epochs()):

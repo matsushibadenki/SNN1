@@ -112,9 +112,14 @@ def main_worker(rank, world_size, container, args):
     model = container.snn_model(vocab_size=vocab.vocab_size).to(device)
     
     # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-    # チェックポイント保存用にモデル設定を取得
-    model_config = container.config.model.as_dict()
-    model_config.pop('path', None)
+    # チェックポイント保存用にモデル設定をコンテナから直接取得
+    model_config = {
+        'd_model': container.config.model.d_model(),
+        'd_state': container.config.model.d_state(),
+        'num_layers': container.config.model.num_layers(),
+        'time_steps': container.config.model.time_steps(),
+        'n_head': container.config.model.n_head(),
+    }
     # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if is_distributed: model = DDP(model, device_ids=[rank])

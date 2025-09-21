@@ -1,4 +1,4 @@
-# matsushibadenki/snn/data_preparation/prepare_wikitext.py
+# matsushibadenki/snn/SNN-2e86a361c76c65c1a2b1c1d1b4046d5ebb98997a/scripts/data_preparation.py
 #
 # 大規模言語モデル事前学習用データセット (WikiText) の準備スクリプト
 #

@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
 # 新しいプロジェクト構造に対応したインポート
 from snn_research.data.datasets import Vocabulary
@@ -49,13 +49,16 @@ class ClassificationDataset(Dataset):
         with open(file_path, 'r', encoding='utf-8') as f:
             self.data = [json.loads(line) for line in f]
     def __len__(self) -> int: return len(self.data)
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         encoded = self.vocab.encode(self.data[idx]['text'], add_start_end=False)
         return torch.tensor(encoded, dtype=torch.long), self.data[idx]['label']
 
-def collate_fn_for_classification(batch: list, pad_id: int) -> tuple[torch.Tensor, torch.Tensor]:
+def collate_fn_for_classification(batch: List[Tuple[torch.Tensor, int]], pad_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
     inputs, targets = zip(*batch)
-    padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=pad_id)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    # mypyエラー(arg-type)対策: pad_sequenceにはタプルの代わりにリストを渡す
+    padded_inputs = pad_sequence(list(inputs), batch_first=True, padding_value=pad_id)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     return padded_inputs, torch.tensor(targets, dtype=torch.long)
 
 # --- 3. SNN 分類モデル ---
@@ -83,13 +86,11 @@ def run_benchmark_for_model(model_type: str, data_paths: dict, vocab: Vocabulary
     loader_train = DataLoader(dataset_train, batch_size=16, shuffle=True, collate_fn=collate_fn)
     loader_val = DataLoader(dataset_val, batch_size=16, shuffle=False, collate_fn=collate_fn)
 
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     model: nn.Module
     if model_type == 'SNN':
         model = SNNClassifier(vocab_size=vocab.vocab_size, **model_params, num_classes=2).to(device)
     else: # ANN
         model = ANNBaselineModel(vocab_size=vocab.vocab_size, **model_params).to(device)
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
     criterion = nn.CrossEntropyLoss()
@@ -108,11 +109,9 @@ def run_benchmark_for_model(model_type: str, data_paths: dict, vocab: Vocabulary
             optimizer.step()
 
     model.eval()
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     true_labels: List[int] = []
     pred_labels: List[int] = []
     latencies: List[float] = []
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     with torch.no_grad():
         for inputs, targets in tqdm(loader_val, desc=f"{model_type} Evaluating"):
             inputs, targets = inputs.to(device), targets.to(device)

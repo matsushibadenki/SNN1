@@ -97,9 +97,7 @@ def main_worker(rank, world_size, container, args):
     model_config = container.config.model.to_dict()
     model_config.pop('path', None)
     
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     model = container.snn_model(vocab_size=vocab.vocab_size, **model_config).to(device)
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if is_distributed: model = DDP(model, device_ids=[rank])
     
@@ -109,7 +107,9 @@ def main_worker(rank, world_size, container, args):
     container.standard_loss.kwargs['pad_id'] = vocab.pad_id
     container.distillation_loss.kwargs['student_pad_id'] = vocab.pad_id
     
-    trainer_provider = container.trainer(model=model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    trainer_provider = container.get_trainer_factory(model=model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     trainer = trainer_provider()
 
     if rank in [-1, 0]: print(f"\n🔥 {container.config.training.type()} 学習を開始します...")

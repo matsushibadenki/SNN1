@@ -93,7 +93,6 @@ def main_worker(rank, world_size, container, args):
     dataloader = DataLoader(train_dataset, batch_size=container.config.training.batch_size(),
                               sampler=sampler, collate_fn=_collate_fn, num_workers=2, shuffle=(sampler is None))
 
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     # --- デバイスの自動選択ロジック ---
     if is_distributed:
         device = f"cuda:{rank}"
@@ -108,14 +107,15 @@ def main_worker(rank, world_size, container, args):
                 print(f"⚠️  '{config_device}' is not available. Falling back to 'cpu'.")
             device = "cpu"
     print(f"Selected device: {device}")
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     # DIコンテナに設定済みのパラメータを利用し、動的に必要なvocab_sizeのみを渡す
     model = container.snn_model(vocab_size=vocab.vocab_size).to(device)
     
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     # チェックポイント保存用にモデル設定を取得
-    model_config = container.config.model.to_dict()
+    model_config = container.config.model.as_dict()
     model_config.pop('path', None)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if is_distributed: model = DDP(model, device_ids=[rank])
     
@@ -165,7 +165,6 @@ if __name__ == "__main__":
         print(f"{world_size}個のGPUで '{training_type}' 学習を開始します。")
         torch.multiprocessing.spawn(main_worker, args=(world_size, container, args), nprocs=world_size, join=True)
     else:
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         device_name = container.config.device()
         if device_name == "cuda" and not torch.cuda.is_available():
             print("CUDA is not available, switching to MPS if possible, otherwise CPU.")
@@ -174,5 +173,4 @@ if __name__ == "__main__":
             print("MPS is not available, switching to CPU.")
             device_name = "cpu"
         print(f"単一デバイス ({device_name}) で 'standard' 学習を開始します。")
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         main_worker(-1, 1, container, args)

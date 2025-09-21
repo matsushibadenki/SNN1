@@ -16,11 +16,8 @@ import math
 from collections import deque
 from tqdm import tqdm
 
-# (TTFSEncoder, AdaptiveLIFNeuron, MetaplasticLIFNeuron, STDPSynapse, STPSynapse, EventDrivenSSMLayer, SpikingTemporalAttention, BreakthroughSNN のコードは変更なし)
-# ... (既存のコードをここにペースト) ...
-# ----------------------------------------
-# 1. 高度なスパイクエンコーダー (snn_advanced_optimization.pyより)
-# ----------------------------------------
+# (TTFSEncoder, MetaplasticLIFNeuron, STDPSynapse, STPSynapse, EventDrivenSSMLayer, SpikingTemporalAttention, BreakthroughSNN のコードは変更なし)
+# ...
 
 class TTFSEncoder(nn.Module):
     """
@@ -59,10 +56,6 @@ class TTFSEncoder(nn.Module):
         spikes.scatter_(1, spike_times.unsqueeze(1), 1.0)
         return spikes
 
-# ----------------------------------------
-# 2. 高度なニューロンモデル (snn_advanced_optimization.py, snn_advanced_plasticity.pyより)
-# ----------------------------------------
-
 class AdaptiveLIFNeuron(nn.Module):
     """
     適応的閾値を持つLIFニューロン
@@ -75,19 +68,15 @@ class AdaptiveLIFNeuron(nn.Module):
         self.base_threshold = base_threshold
         self.adaptation_strength = adaptation_strength
         
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.register_buffer('v_mem', torch.zeros(1, 1, features))
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.register_buffer('adaptive_threshold', torch.ones(features) * base_threshold)
         self.surrogate_function = surrogate.ATan(alpha=2.0)
         self.mem_decay = math.exp(-1.0 / tau)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         # v_memの形状を入力xに合わせる (batch_size, seq_len, features)
         if self.v_mem.shape[0] != x.shape[0] or self.v_mem.shape[1] != x.shape[1]:
             self.v_mem = torch.zeros_like(x)
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
         self.v_mem = self.v_mem * self.mem_decay + x
         spike = self.surrogate_function(self.v_mem - self.adaptive_threshold)
@@ -96,8 +85,8 @@ class AdaptiveLIFNeuron(nn.Module):
         # 適応的閾値の更新
         with torch.no_grad():
             # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-            # 3Dテンソルに対応
-            self.adaptive_threshold += self.adaptation_strength * (spike.mean(dim=(0, 1)) - 0.1) # 目標発火率0.1
+            # In-place operation (+=) を避ける
+            self.adaptive_threshold = self.adaptive_threshold + self.adaptation_strength * (spike.mean(dim=(0, 1)) - 0.1)
             # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         return spike
@@ -121,10 +110,8 @@ class MetaplasticLIFNeuron(nn.Module):
         self.metaplastic_tau = metaplastic_tau
         self.metaplastic_strength = metaplastic_strength
         
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.register_buffer('v_mem', torch.zeros(1, 1, features))
         self.register_buffer('activity_history', torch.zeros(1, 1, features))
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.register_buffer('adaptive_threshold', torch.ones(features) * threshold)
         self.surrogate_function = surrogate.ATan(alpha=2.0)
         
@@ -132,23 +119,20 @@ class MetaplasticLIFNeuron(nn.Module):
         self.meta_decay = math.exp(-1.0 / metaplastic_tau)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         if self.v_mem.shape[0] != x.shape[0] or self.v_mem.shape[1] != x.shape[1]:
             self.v_mem = torch.zeros_like(x)
             self.activity_history = torch.zeros_like(x)
         
         self.v_mem = self.v_mem * self.mem_decay + x
         current_threshold = self.adaptive_threshold * (1.0 + self.metaplastic_strength * self.activity_history.mean(dim=(0,1)))
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         spike = self.surrogate_function(self.v_mem - current_threshold)
         self.v_mem = self.v_mem * (1.0 - spike.detach())
         self.activity_history = self.activity_history * self.meta_decay + spike.detach() * (1 - self.meta_decay)
         
         return spike
+        
+# ... (以降のコードは変更なし) ...
 
-# ----------------------------------------
-# 3. 生物学的シナプス可塑性 (snn_advanced_plasticity.pyより)
-# ----------------------------------------
 class STDPSynapse(nn.Module):
     """ Spike-Timing-Dependent Plasticity シナプス """
     def __init__(self, 
@@ -243,12 +227,6 @@ class STPSynapse(nn.Module):
             self.x = self.x * self.dep_decay + (1 - self.x) * self.dep_decay * (1 - pre_spike * self.u)
         return F.linear(pre_spike, effective_weight)
 
-
-# ----------------------------------------
-# 4. Event-Driven State Space Model (snn_advanced_optimization.pyより)
-# ----------------------------------------
-
-
 class EventDrivenSSMLayer(nn.Module):
     """
     Event-driven Spiking State Space Model
@@ -295,10 +273,6 @@ class EventDrivenSSMLayer(nn.Module):
         
         functional.reset_net(self)
         return torch.stack(outputs, dim=1)
-
-# ----------------------------------------
-# 5. 時間的アテンション機構
-# ----------------------------------------
 
 class SpikingTemporalAttention(nn.Module):
     """
@@ -357,9 +331,6 @@ class SpikingTemporalAttention(nn.Module):
         
         return output
 
-# ----------------------------------------
-# 6. 統合された次世代SNNアーキテクチャ
-# ----------------------------------------
 class BreakthroughSNN(nn.Module):
     """
     EventDriven-SSMと時間的アテンションを統合した、次世代のSNNアーキテクチャ。

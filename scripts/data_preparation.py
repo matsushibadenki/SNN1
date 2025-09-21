@@ -14,8 +14,8 @@
 
 import os
 import json
-from datasets import load_dataset
-from tqdm import tqdm
+from datasets import load_dataset  # type: ignore
+from tqdm import tqdm  # type: ignore
 
 def prepare_wikitext_data(output_dir: str = "data", cache_dir: str = ".cache"):
     """

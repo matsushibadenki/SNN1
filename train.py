@@ -18,6 +18,11 @@ from functools import partial
 from app.containers import TrainingContainer
 from snn_research.data.datasets import DataFormat, Vocabulary, get_dataset_class
 
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+# --- PyTorchの異常検出モードを有効化 ---
+torch.autograd.set_detect_anomaly(True)
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+
 # --- (set_seed, collate_fn, DistillationDataset, distillation_collate_fn のコードは変更なし) ---
 def set_seed(seed: int):
     import random
@@ -71,9 +76,7 @@ def main_worker(rank, world_size, container, args):
         vocab = container.vocabulary()
         dataset_class = DistillationDataset if is_distillation else get_dataset_class(DataFormat(container.config.data.format()))
         text_iterator = (item for item in dataset_class(container.config.data.path())) if is_distillation else dataset_class.extract_texts(container.config.data.path())
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         vocab.build_vocab(text_iterator, max_size=container.config.data.max_vocab_size())
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         torch.save(vocab, vocab_path)
         print(f"✅ 語彙を構築しました。語彙数: {vocab.vocab_size}")
 

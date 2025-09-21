@@ -16,7 +16,7 @@ import math
 from collections import deque
 from tqdm import tqdm
 
-# (TTFSEncoder, MetaplasticLIFNeuron, STDPSynapse, STPSynapse, EventDrivenSSMLayer, SpikingTemporalAttention, BreakthroughSNN のコードは変更なし)
+# (TTFSEncoder, MetaplasticLIFNeuron, STDPSynapse, STPSynapse, SpikingTemporalAttention, BreakthroughSNN のコードは変更なし)
 # ...
 
 class TTFSEncoder(nn.Module):
@@ -77,12 +77,9 @@ class AdaptiveLIFNeuron(nn.Module):
         if self.v_mem.shape[0] != x.shape[0] or self.v_mem.shape[1] != x.shape[1]:
             self.v_mem = torch.zeros_like(x)
 
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-        # In-place操作を避けるため、計算途中の値を一時変数に保持
         v_potential = self.v_mem * self.mem_decay + x
         spike = self.surrogate_function(v_potential - self.adaptive_threshold)
         self.v_mem = v_potential * (1.0 - spike.detach())
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         with torch.no_grad():
             self.adaptive_threshold = self.adaptive_threshold + self.adaptation_strength * (spike.mean(dim=(0, 1)) - 0.1)
@@ -121,18 +118,13 @@ class MetaplasticLIFNeuron(nn.Module):
             self.v_mem = torch.zeros_like(x)
             self.activity_history = torch.zeros_like(x)
         
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-        # In-place操作を避けるため、計算途中の値を一時変数に保持
         v_potential = self.v_mem * self.mem_decay + x
         current_threshold = self.adaptive_threshold * (1.0 + self.metaplastic_strength * self.activity_history.mean(dim=(0,1)))
         spike = self.surrogate_function(v_potential - current_threshold)
         self.v_mem = v_potential * (1.0 - spike.detach())
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.activity_history = self.activity_history * self.meta_decay + spike.detach() * (1 - self.meta_decay)
         
         return spike
-        
-# ... (以降のコードは変更なし) ...
 
 class STDPSynapse(nn.Module):
     """ Spike-Timing-Dependent Plasticity シナプス """
@@ -250,27 +242,39 @@ class EventDrivenSSMLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, time_steps, seq_len, _ = x.shape
-        if self.h_state.shape[0] != batch_size or self.h_state.shape[1] != seq_len:
-            self.h_state = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
-        self.h_state = self.h_state.detach()
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # ローカル変数 h で状態を管理し、in-place operationを避ける
+        h = self.h_state
+        if h.shape[0] != batch_size or h.shape[1] != seq_len:
+            h = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
+        h = h.detach() # 勾配が過去のバッチに伝わらないようにする
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
         outputs = []
         for t in range(time_steps):
             x_t = x[:, t, :, :]
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+            # h_stateの代わりにローカル変数hを使用
+            state_transition = F.linear(h, self.A)
             if torch.any(x_t > 0):
-                state_transition = F.linear(self.h_state, self.A)
                 input_projection = F.linear(x_t, self.B)
                 state_update = state_transition + input_projection
-                self.h_state = self.state_lif(state_update)
+                h = self.state_lif(state_update)
                 
-                output_projection = F.linear(self.h_state, self.C)
+                output_projection = F.linear(h, self.C)
                 output_update = output_projection + F.linear(x_t, self.D)
                 out_spike = self.output_lif(output_update)
             else:
-                self.h_state = self.state_lif(F.linear(self.h_state, self.A))
+                h = self.state_lif(state_transition)
                 out_spike = torch.zeros_like(x_t)
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
             
             outputs.append(out_spike)
+        
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # 次のフォワードパスのために状態を保存
+        self.h_state = h
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         functional.reset_net(self)
         return torch.stack(outputs, dim=1)

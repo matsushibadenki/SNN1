@@ -40,7 +40,7 @@ python \-m scripts.data\_preparation
 
 例1: 基本的な学習  
 configs/base\_config.yaml の設定で学習を開始します。  
-python train.py \--config configs/base\_config.yaml \--data\_path path/to/your/data.jsonl
+python train.py --config configs/base_config.yaml --data_path data/wikitext-103_train.jsonl
 
 例2: 分散学習 (GPUが2つの場合)  
 configs/base\_config.yaml の training.type を distributed に変更し、以下を実行します。  

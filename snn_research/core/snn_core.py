@@ -5,6 +5,8 @@
 # - CombinedLossの定義を削除（losses.pyに移動したため）
 # - inplace operationエラーを解消するため、ニューロンモデルの内部状態（v_memなど）を
 #   forwardメソッドの引数と戻り値で明示的に管理するように変更。
+# - レビュー指摘に基づき、TTFSEncoder内のインプレース操作(clamp_, scatter_)を
+#   非インプレース版(torch.clamp, scatter)に置換し、堅牢性を向上。
 
 import torch
 import torch.nn as nn
@@ -48,11 +50,11 @@ class TTFSEncoder(nn.Module):
         # スパイク列を生成
         spikes = torch.zeros(x.shape[0], self.time_steps, x.shape[1], x.shape[2], device=x.device)
         
-        # scatter_を使って指定したタイミングで発火
-        # (batch, 1, seq, d_model) -> (batch, time, seq, d_model)
-        # spike_timesが範囲外になるのを防ぐ
-        spike_times.clamp_(0, self.time_steps - 1)
-        spikes.scatter_(1, spike_times.unsqueeze(1), 1.0)
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # インプレース操作を避けるため、clamp_ と scatter_ を非インプレース版に変更
+        spike_times = torch.clamp(spike_times, 0, self.time_steps - 1)
+        spikes = spikes.scatter(1, spike_times.unsqueeze(1), 1.0)
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         return spikes
 
 class AdaptiveLIFNeuron(nn.Module):

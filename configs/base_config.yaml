@@ -3,32 +3,31 @@
 
 # 共通設定
 seed: 42
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-# device: "cuda" # NVIDIA GPUがない環境（Macなど）ではエラーになるため、"mps"または"cpu"を推奨
 device: "mps"
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 # データ設定
 data:
-  # データパスはコマンドライン引数で上書きすることを想定
   path: "data/wikitext-103_train.jsonl"
   format: "simple_text"
   split_ratio: 0.1 # 検証用データの割合
+  # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+  max_vocab_size: 50000 # 語彙数の上限を設定
+  # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
-# モデルアーキテクチャ設定
+# モデルアーキテクチャ設定 (元のサイズに戻す)
 model:
   path: "breakthrough_snn_model.pth"
   d_model: 256
   d_state: 128
   num_layers: 8
   time_steps: 20
-  n_head: 4 # for SpikingTemporalAttention
+  n_head: 4
 
-# 学習パラメータ設定
+# 学習パラメータ設定 (元のサイズに戻す)
 training:
   type: "standard" # "standard", "distributed", "distillation" から選択
   epochs: 10
-  batch_size: 16 # 分散学習時はGPUあたりのサイズ
+  batch_size: 16
   learning_rate: 0.0005
   use_scheduler: true
   grad_clip_norm: 1.0
@@ -51,11 +50,9 @@ training:
   log_interval: 1
 
 # 推論/アプリ設定
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 inference:
   device: "mps"
   max_len: 50
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 # Gradioアプリ設定
 app:

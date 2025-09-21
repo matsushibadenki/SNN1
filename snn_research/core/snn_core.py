@@ -3,6 +3,8 @@
 # 
 # 変更点:
 # - CombinedLossの定義を削除（losses.pyに移動したため）
+# - inplace operationエラーを解消するため、ニューロンモデルの内部状態（v_memなど）を
+#   forwardメソッドの引数と戻り値で明示的に管理するように変更。
 
 import torch
 import torch.nn as nn
@@ -15,9 +17,6 @@ import collections
 import math
 from collections import deque
 from tqdm import tqdm
-
-# (TTFSEncoder, MetaplasticLIFNeuron, STDPSynapse, STPSynapse, SpikingTemporalAttention, BreakthroughSNN のコードは変更なし)
-# ...
 
 class TTFSEncoder(nn.Module):
     """
@@ -68,23 +67,19 @@ class AdaptiveLIFNeuron(nn.Module):
         self.base_threshold = base_threshold
         self.adaptation_strength = adaptation_strength
         
-        self.register_buffer('v_mem', torch.zeros(1, 1, features))
         self.register_buffer('adaptive_threshold', torch.ones(features) * base_threshold)
         self.surrogate_function = surrogate.ATan(alpha=2.0)
         self.mem_decay = math.exp(-1.0 / tau)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.v_mem.shape[0] != x.shape[0] or self.v_mem.shape[1] != x.shape[1]:
-            self.v_mem = torch.zeros_like(x)
-
-        v_potential = self.v_mem * self.mem_decay + x
+    def forward(self, x: torch.Tensor, v_mem: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        v_potential = v_mem * self.mem_decay + x
         spike = self.surrogate_function(v_potential - self.adaptive_threshold)
-        self.v_mem = v_potential * (1.0 - spike.detach())
+        v_mem_new = v_potential * (1.0 - spike.detach())
         
         with torch.no_grad():
             self.adaptive_threshold = self.adaptive_threshold + self.adaptation_strength * (spike.mean(dim=(0, 1)) - 0.1)
         
-        return spike
+        return spike, v_mem_new
 
 class MetaplasticLIFNeuron(nn.Module):
     """
@@ -105,26 +100,21 @@ class MetaplasticLIFNeuron(nn.Module):
         self.metaplastic_tau = metaplastic_tau
         self.metaplastic_strength = metaplastic_strength
         
-        self.register_buffer('v_mem', torch.zeros(1, 1, features))
-        self.register_buffer('activity_history', torch.zeros(1, 1, features))
         self.register_buffer('adaptive_threshold', torch.ones(features) * threshold)
         self.surrogate_function = surrogate.ATan(alpha=2.0)
         
         self.mem_decay = math.exp(-1.0 / tau)
         self.meta_decay = math.exp(-1.0 / metaplastic_tau)
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.v_mem.shape[0] != x.shape[0] or self.v_mem.shape[1] != x.shape[1]:
-            self.v_mem = torch.zeros_like(x)
-            self.activity_history = torch.zeros_like(x)
-        
-        v_potential = self.v_mem * self.mem_decay + x
-        current_threshold = self.adaptive_threshold * (1.0 + self.metaplastic_strength * self.activity_history.mean(dim=(0,1)))
+    def forward(self, x: torch.Tensor, v_mem: torch.Tensor, activity_history: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        v_potential = v_mem * self.mem_decay + x
+        current_threshold = self.adaptive_threshold * (1.0 + self.metaplastic_strength * activity_history.mean(dim=(0,1)))
         spike = self.surrogate_function(v_potential - current_threshold)
-        self.v_mem = v_potential * (1.0 - spike.detach())
-        self.activity_history = self.activity_history * self.meta_decay + spike.detach() * (1 - self.meta_decay)
         
-        return spike
+        v_mem_new = v_potential * (1.0 - spike.detach())
+        activity_history_new = activity_history * self.meta_decay + spike.detach() * (1 - self.meta_decay)
+        
+        return spike, v_mem_new, activity_history_new
 
 class STDPSynapse(nn.Module):
     """ Spike-Timing-Dependent Plasticity シナプス """
@@ -238,46 +228,49 @@ class EventDrivenSSMLayer(nn.Module):
         
         self.state_lif = AdaptiveLIFNeuron(d_state)
         self.output_lif = AdaptiveLIFNeuron(d_model)
+        
         self.register_buffer('h_state', torch.zeros(1, 1, d_state))
+        self.register_buffer('state_v_mem', torch.zeros(1, 1, d_state))
+        self.register_buffer('output_v_mem', torch.zeros(1, 1, d_model))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, time_steps, seq_len, _ = x.shape
         
-        # Initialize hidden state from the buffer for the new sequence
         h = self.h_state
+        state_v = self.state_v_mem
+        output_v = self.output_v_mem
+
         if h.shape[0] != batch_size or h.shape[1] != seq_len:
             h = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
-        
-        # Detach the hidden state to prevent gradients from flowing back to the previous sequence
-        h = h.detach()
+            state_v = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
+        if output_v.shape[0] != batch_size or output_v.shape[1] != seq_len:
+            output_v = torch.zeros(batch_size, seq_len, self.d_model, device=x.device)
+
+        h, state_v, output_v = h.detach(), state_v.detach(), output_v.detach()
 
         outputs = []
         for t in range(time_steps):
             x_t = x[:, t, :, :]
-            
-            # Calculate state transition based on current hidden state
             state_transition = F.linear(h, self.A)
-
-            # If there are any input spikes, update state with input
+            
             if torch.any(x_t > 0):
                 input_projection = F.linear(x_t, self.B)
                 state_update = state_transition + input_projection
-                h = self.state_lif(state_update)
+                h, state_v = self.state_lif(state_update, state_v)
                 
                 output_projection = F.linear(h, self.C)
                 output_update = output_projection + F.linear(x_t, self.D)
-                out_spike = self.output_lif(output_update)
-            # If no input spikes, the state evolves on its own
+                out_spike, output_v = self.output_lif(output_update, output_v)
             else:
-                h = self.state_lif(state_transition)
+                h, state_v = self.state_lif(state_transition, state_v)
                 out_spike = torch.zeros_like(x_t)
             
             outputs.append(out_spike)
         
-        # Save the final hidden state for the next sequence, detaching it from the current graph
         self.h_state = h.detach()
+        self.state_v_mem = state_v.detach()
+        self.output_v_mem = output_v.detach()
         
-        functional.reset_net(self)
         return torch.stack(outputs, dim=1)
 
 class SpikingTemporalAttention(nn.Module):
@@ -366,4 +359,5 @@ class BreakthroughSNN(nn.Module):
         time_integrated = hidden_states.mean(dim=1)
         logits = self.output_projection(time_integrated)
         
+        functional.reset_net(self) # Reset SpikingJelly modules if any
         return logits, hidden_states

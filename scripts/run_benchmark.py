@@ -13,14 +13,15 @@
 import os
 import json
 import time
-import pandas as pd
-from datasets import load_dataset
-from sklearn.metrics import accuracy_score
-from tqdm import tqdm
+import pandas as pd  # type: ignore
+from datasets import load_dataset  # type: ignore
+from sklearn.metrics import accuracy_score  # type: ignore
+from tqdm import tqdm  # type: ignore
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence
+from typing import Dict, Any, List
 
 # 新しいプロジェクト構造に対応したインポート
 from snn_research.data.datasets import Vocabulary
@@ -28,10 +29,10 @@ from snn_research.core.snn_core import BreakthroughSNN
 from snn_research.benchmark.ann_baseline import ANNBaselineModel
 
 # --- 1. データ準備 ---
-def prepare_sst2_data(output_dir: str = "data"):
+def prepare_sst2_data(output_dir: str = "data") -> Dict[str, str]:
     if not os.path.exists(output_dir): os.makedirs(output_dir)
     dataset = load_dataset("glue", "sst2")
-    data_paths = {}
+    data_paths: Dict[str, str] = {}
     for split in ["train", "validation"]:
         jsonl_path = os.path.join(output_dir, f"sst2_{split}.jsonl")
         data_paths[split] = jsonl_path
@@ -43,35 +44,35 @@ def prepare_sst2_data(output_dir: str = "data"):
 
 # --- 2. 共通データセット ---
 class ClassificationDataset(Dataset):
-    def __init__(self, file_path, vocab):
+    def __init__(self, file_path: str, vocab: Vocabulary):
         self.vocab = vocab
         with open(file_path, 'r', encoding='utf-8') as f:
             self.data = [json.loads(line) for line in f]
-    def __len__(self): return len(self.data)
-    def __getitem__(self, idx):
+    def __len__(self) -> int: return len(self.data)
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         encoded = self.vocab.encode(self.data[idx]['text'], add_start_end=False)
         return torch.tensor(encoded, dtype=torch.long), self.data[idx]['label']
 
-def collate_fn_for_classification(batch, pad_id):
+def collate_fn_for_classification(batch: list, pad_id: int) -> tuple[torch.Tensor, torch.Tensor]:
     inputs, targets = zip(*batch)
     padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=pad_id)
     return padded_inputs, torch.tensor(targets, dtype=torch.long)
 
 # --- 3. SNN 分類モデル ---
 class SNNClassifier(nn.Module):
-    def __init__(self, vocab_size, d_model, d_state, num_layers, time_steps, n_head, num_classes):
+    def __init__(self, vocab_size: int, d_model: int, d_state: int, num_layers: int, time_steps: int, n_head: int, num_classes: int):
         super().__init__()
         self.snn_backbone = BreakthroughSNN(vocab_size, d_model, d_state, num_layers, time_steps, n_head)
         self.classifier = nn.Linear(d_model, num_classes)
     
-    def forward(self, input_ids, src_padding_mask=None): # ANNとI/Fを合わせる
+    def forward(self, input_ids: torch.Tensor, src_padding_mask: Any = None) -> torch.Tensor: # ANNとI/Fを合わせる
         _, spikes = self.snn_backbone(input_ids, return_spikes=True)
         # 時間積分された特徴量のシーケンス平均を取得
         pooled_features = spikes.mean(dim=1).mean(dim=1)
         return self.classifier(pooled_features)
 
 # --- 4. 実行関数 ---
-def run_benchmark_for_model(model_type: str, data_paths: dict, vocab: Vocabulary, model_params: dict):
+def run_benchmark_for_model(model_type: str, data_paths: dict, vocab: Vocabulary, model_params: dict) -> Dict[str, Any]:
     print("\n" + "="*20 + f" 🚀 Starting {model_type} Benchmark " + "="*20)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
@@ -82,10 +83,13 @@ def run_benchmark_for_model(model_type: str, data_paths: dict, vocab: Vocabulary
     loader_train = DataLoader(dataset_train, batch_size=16, shuffle=True, collate_fn=collate_fn)
     loader_val = DataLoader(dataset_val, batch_size=16, shuffle=False, collate_fn=collate_fn)
 
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    model: nn.Module
     if model_type == 'SNN':
         model = SNNClassifier(vocab_size=vocab.vocab_size, **model_params, num_classes=2).to(device)
     else: # ANN
         model = ANNBaselineModel(vocab_size=vocab.vocab_size, **model_params).to(device)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
     criterion = nn.CrossEntropyLoss()
@@ -104,7 +108,11 @@ def run_benchmark_for_model(model_type: str, data_paths: dict, vocab: Vocabulary
             optimizer.step()
 
     model.eval()
-    true_labels, pred_labels, latencies = [], [], []
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    true_labels: List[int] = []
+    pred_labels: List[int] = []
+    latencies: List[float] = []
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     with torch.no_grad():
         for inputs, targets in tqdm(loader_val, desc=f"{model_type} Evaluating"):
             inputs, targets = inputs.to(device), targets.to(device)

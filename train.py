@@ -75,7 +75,9 @@ def main_worker(rank, world_size, container, args):
         print(f"✅ 語彙を構築しました。語彙数: {vocab.vocab_size}")
 
     if is_distributed: dist.barrier()
-    vocab = torch.load(vocab_path, map_location='cpu')
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    vocab = torch.load(vocab_path, map_location='cpu', weights_only=False)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     dataset = (DistillationDataset(container.config.data.path()) if is_distillation 
                else get_dataset_class(DataFormat(container.config.data.format()))(container.config.data.path(), vocab))
@@ -107,9 +109,7 @@ def main_worker(rank, world_size, container, args):
     container.standard_loss.kwargs['pad_id'] = vocab.pad_id
     container.distillation_loss.kwargs['student_pad_id'] = vocab.pad_id
     
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     trainer_provider = container.get_trainer_factory(model=model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank)
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     trainer = trainer_provider()
 
     if rank in [-1, 0]: print(f"\n🔥 {container.config.training.type()} 学習を開始します...")

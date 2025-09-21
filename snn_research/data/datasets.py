@@ -22,14 +22,19 @@ class Vocabulary:
         self.word2idx = self.special_tokens.copy()
         self.idx2word = {v: k for k, v in self.word2idx.items()}
 
-    def build_vocab(self, all_texts: Iterator[str]):
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    def build_vocab(self, all_texts: Iterator[str], max_size: int = 50000):
         all_words = itertools.chain.from_iterable(txt.lower().split() for txt in all_texts)
         word_counts = Counter(all_words)
-        for word, _ in word_counts.items():
+        # 頻度上位の単語に絞り込む
+        most_common_words = word_counts.most_common(max_size - len(self.special_tokens))
+        
+        for word, _ in most_common_words:
             if word not in self.word2idx:
                 idx = len(self.word2idx)
                 self.word2idx[word] = idx
                 self.idx2word[idx] = word
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     def encode(self, text: str, add_start_end: bool = True) -> List[int]:
         tokens = [self.word2idx.get(word.lower(), self.special_tokens["<UNK>"]) for word in text.split()]

@@ -242,20 +242,23 @@ class EventDrivenSSMLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, time_steps, seq_len, _ = x.shape
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-        # ローカル変数 h で状態を管理し、in-place operationを避ける
+        
+        # Initialize hidden state from the buffer for the new sequence
         h = self.h_state
         if h.shape[0] != batch_size or h.shape[1] != seq_len:
             h = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
-        h = h.detach() # 勾配が過去のバッチに伝わらないようにする
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        
+        # Detach the hidden state to prevent gradients from flowing back to the previous sequence
+        h = h.detach()
 
         outputs = []
         for t in range(time_steps):
             x_t = x[:, t, :, :]
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-            # h_stateの代わりにローカル変数hを使用
+            
+            # Calculate state transition based on current hidden state
             state_transition = F.linear(h, self.A)
+
+            # If there are any input spikes, update state with input
             if torch.any(x_t > 0):
                 input_projection = F.linear(x_t, self.B)
                 state_update = state_transition + input_projection
@@ -264,17 +267,15 @@ class EventDrivenSSMLayer(nn.Module):
                 output_projection = F.linear(h, self.C)
                 output_update = output_projection + F.linear(x_t, self.D)
                 out_spike = self.output_lif(output_update)
+            # If no input spikes, the state evolves on its own
             else:
                 h = self.state_lif(state_transition)
                 out_spike = torch.zeros_like(x_t)
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
             
             outputs.append(out_spike)
         
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-        # 次のフォワードパスのために状態を保存
-        self.h_state = h
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # Save the final hidden state for the next sequence, detaching it from the current graph
+        self.h_state = h.detach()
         
         functional.reset_net(self)
         return torch.stack(outputs, dim=1)

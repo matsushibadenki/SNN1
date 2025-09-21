@@ -74,20 +74,18 @@ class AdaptiveLIFNeuron(nn.Module):
         self.mem_decay = math.exp(-1.0 / tau)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # v_memの形状を入力xに合わせる (batch_size, seq_len, features)
         if self.v_mem.shape[0] != x.shape[0] or self.v_mem.shape[1] != x.shape[1]:
             self.v_mem = torch.zeros_like(x)
 
-        self.v_mem = self.v_mem * self.mem_decay + x
-        spike = self.surrogate_function(self.v_mem - self.adaptive_threshold)
-        self.v_mem = self.v_mem * (1.0 - spike.detach())
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # In-place操作を避けるため、計算途中の値を一時変数に保持
+        v_potential = self.v_mem * self.mem_decay + x
+        spike = self.surrogate_function(v_potential - self.adaptive_threshold)
+        self.v_mem = v_potential * (1.0 - spike.detach())
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
-        # 適応的閾値の更新
         with torch.no_grad():
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-            # In-place operation (+=) を避ける
             self.adaptive_threshold = self.adaptive_threshold + self.adaptation_strength * (spike.mean(dim=(0, 1)) - 0.1)
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         return spike
 
@@ -123,10 +121,13 @@ class MetaplasticLIFNeuron(nn.Module):
             self.v_mem = torch.zeros_like(x)
             self.activity_history = torch.zeros_like(x)
         
-        self.v_mem = self.v_mem * self.mem_decay + x
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # In-place操作を避けるため、計算途中の値を一時変数に保持
+        v_potential = self.v_mem * self.mem_decay + x
         current_threshold = self.adaptive_threshold * (1.0 + self.metaplastic_strength * self.activity_history.mean(dim=(0,1)))
-        spike = self.surrogate_function(self.v_mem - current_threshold)
-        self.v_mem = self.v_mem * (1.0 - spike.detach())
+        spike = self.surrogate_function(v_potential - current_threshold)
+        self.v_mem = v_potential * (1.0 - spike.detach())
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.activity_history = self.activity_history * self.meta_decay + spike.detach() * (1 - self.meta_decay)
         
         return spike

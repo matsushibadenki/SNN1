@@ -272,11 +272,15 @@ class EventDrivenSSMLayer(nn.Module):
             x_t = x[:, t, :, :]
             if torch.any(x_t > 0):
                 state_transition = F.linear(self.h_state, self.A)
-                input_projection = F.linear(x_t, self.B.T)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+                input_projection = F.linear(x_t, self.B)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 state_update = state_transition + input_projection
                 self.h_state = self.state_lif(state_update)
                 
-                output_projection = F.linear(self.h_state, self.C.T)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+                output_projection = F.linear(self.h_state, self.C)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 output_update = output_projection + F.linear(x_t, self.D)
                 out_spike = self.output_lif(output_update)
             else:

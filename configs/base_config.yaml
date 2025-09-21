@@ -10,9 +10,7 @@ data:
   path: "data/wikitext-103_train.jsonl"
   format: "simple_text"
   split_ratio: 0.1 # 検証用データの割合
-  # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
   max_vocab_size: 50000 # 語彙数の上限を設定
-  # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 # モデルアーキテクチャ設定 (元のサイズに戻す)
 model:
@@ -27,7 +25,9 @@ model:
 training:
   type: "standard" # "standard", "distributed", "distillation" から選択
   epochs: 10
-  batch_size: 16
+  # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+  batch_size: 8 # メモリ不足エラー対策のため16から8に削減
+  # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
   learning_rate: 0.0005
   use_scheduler: true
   grad_clip_norm: 1.0

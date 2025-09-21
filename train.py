@@ -75,9 +75,7 @@ def main_worker(rank, world_size, container, args):
         print(f"✅ 語彙を構築しました。語彙数: {vocab.vocab_size}")
 
     if is_distributed: dist.barrier()
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     vocab = torch.load(vocab_path, map_location='cpu', weights_only=False)
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     dataset = (DistillationDataset(container.config.data.path()) if is_distillation 
                else get_dataset_class(DataFormat(container.config.data.format()))(container.config.data.path(), vocab))
@@ -96,10 +94,15 @@ def main_worker(rank, world_size, container, args):
                               sampler=sampler, collate_fn=_collate_fn, num_workers=2, shuffle=(sampler is None))
 
     device = f"cuda:{rank}" if is_distributed else container.config.device()
+    
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    # DIコンテナに設定済みのパラメータを利用し、動的に必要なvocab_sizeのみを渡す
+    model = container.snn_model(vocab_size=vocab.vocab_size).to(device)
+    
+    # チェックポイント保存用にモデル設定を取得
     model_config = container.config.model.to_dict()
     model_config.pop('path', None)
-    
-    model = container.snn_model(vocab_size=vocab.vocab_size, **model_config).to(device)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if is_distributed: model = DDP(model, device_ids=[rank])
     

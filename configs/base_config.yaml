@@ -3,7 +3,10 @@
 
 # 共通設定
 seed: 42
-device: "cuda"
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+# device: "cuda" # NVIDIA GPUがない環境（Macなど）ではエラーになるため、"mps"または"cpu"を推奨
+device: "mps"
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 # データ設定
 data:
@@ -49,7 +52,7 @@ training:
 
 # 推論/アプリ設定
 inference:
-  device: "cpu"
+  device: "mps"
   max_len: 50
 
 # Gradioアプリ設定

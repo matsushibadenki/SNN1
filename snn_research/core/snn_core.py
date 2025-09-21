@@ -75,16 +75,19 @@ class AdaptiveLIFNeuron(nn.Module):
         self.base_threshold = base_threshold
         self.adaptation_strength = adaptation_strength
         
-        self.register_buffer('v_mem', torch.zeros(1, features))
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        self.register_buffer('v_mem', torch.zeros(1, 1, features))
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.register_buffer('adaptive_threshold', torch.ones(features) * base_threshold)
         self.surrogate_function = surrogate.ATan(alpha=2.0)
         self.mem_decay = math.exp(-1.0 / tau)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size = x.shape[0]
-        # v_memのバッチサイズを動的に調整
-        if self.v_mem.shape[0] != batch_size:
-            self.v_mem = self.v_mem[0].expand(batch_size, -1).clone()
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # v_memの形状を入力xに合わせる (batch_size, seq_len, features)
+        if self.v_mem.shape[0] != x.shape[0] or self.v_mem.shape[1] != x.shape[1]:
+            self.v_mem = torch.zeros_like(x)
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
         self.v_mem = self.v_mem * self.mem_decay + x
         spike = self.surrogate_function(self.v_mem - self.adaptive_threshold)
@@ -92,7 +95,10 @@ class AdaptiveLIFNeuron(nn.Module):
         
         # 適応的閾値の更新
         with torch.no_grad():
-            self.adaptive_threshold += self.adaptation_strength * (spike.mean(0) - 0.1) # 目標発火率0.1
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+            # 3Dテンソルに対応
+            self.adaptive_threshold += self.adaptation_strength * (spike.mean(dim=(0, 1)) - 0.1) # 目標発火率0.1
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         return spike
 
@@ -115,8 +121,10 @@ class MetaplasticLIFNeuron(nn.Module):
         self.metaplastic_tau = metaplastic_tau
         self.metaplastic_strength = metaplastic_strength
         
-        self.register_buffer('v_mem', torch.zeros(1, features))
-        self.register_buffer('activity_history', torch.zeros(1, features))
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        self.register_buffer('v_mem', torch.zeros(1, 1, features))
+        self.register_buffer('activity_history', torch.zeros(1, 1, features))
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.register_buffer('adaptive_threshold', torch.ones(features) * threshold)
         self.surrogate_function = surrogate.ATan(alpha=2.0)
         
@@ -124,14 +132,14 @@ class MetaplasticLIFNeuron(nn.Module):
         self.meta_decay = math.exp(-1.0 / metaplastic_tau)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size = x.shape[0]
-        
-        if self.v_mem.shape[0] != batch_size:
-            self.v_mem = self.v_mem.expand(batch_size, -1).clone()
-            self.activity_history = self.activity_history.expand(batch_size, -1).clone()
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        if self.v_mem.shape[0] != x.shape[0] or self.v_mem.shape[1] != x.shape[1]:
+            self.v_mem = torch.zeros_like(x)
+            self.activity_history = torch.zeros_like(x)
         
         self.v_mem = self.v_mem * self.mem_decay + x
-        current_threshold = self.adaptive_threshold * (1.0 + self.metaplastic_strength * self.activity_history.mean(0))
+        current_threshold = self.adaptive_threshold * (1.0 + self.metaplastic_strength * self.activity_history.mean(dim=(0,1)))
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         spike = self.surrogate_function(self.v_mem - current_threshold)
         self.v_mem = self.v_mem * (1.0 - spike.detach())
         self.activity_history = self.activity_history * self.meta_decay + spike.detach() * (1 - self.meta_decay)
@@ -272,15 +280,11 @@ class EventDrivenSSMLayer(nn.Module):
             x_t = x[:, t, :, :]
             if torch.any(x_t > 0):
                 state_transition = F.linear(self.h_state, self.A)
-                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 input_projection = F.linear(x_t, self.B)
-                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 state_update = state_transition + input_projection
                 self.h_state = self.state_lif(state_update)
                 
-                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 output_projection = F.linear(self.h_state, self.C)
-                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 output_update = output_projection + F.linear(x_t, self.D)
                 out_spike = self.output_lif(output_update)
             else:

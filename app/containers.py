@@ -74,8 +74,9 @@ class TrainingContainer(containers.DeclarativeContainer):
     )
 
     # --- トレーナー (Factoryパターンで学習タイプに応じて切り替え) ---
-    @providers.provider
-    def trainer(self, model, optimizer, scheduler, device, rank) -> providers.Provider:
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    def get_trainer_factory(self, model, optimizer, scheduler, device, rank) -> providers.Provider:
+        """学習タイプに応じて適切なTrainerのFactory Providerを返す。"""
         training_type = self.config.training.type()
         
         common_args = {
@@ -96,6 +97,7 @@ class TrainingContainer(containers.DeclarativeContainer):
                 criterion=self.standard_loss,
                 **common_args
             )
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 
 class AppContainer(containers.DeclarativeContainer):

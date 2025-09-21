@@ -73,31 +73,21 @@ class TrainingContainer(containers.DeclarativeContainer):
         pretrained_model_name_or_path=config.training.distillation.teacher_model
     )
 
-    # --- トレーナー (Factoryパターンで学習タイプに応じて切り替え) ---
     # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-    def get_trainer_factory(self, model, optimizer, scheduler, device, rank) -> providers.Provider:
-        """学習タイプに応じて適切なTrainerのFactory Providerを返す。"""
-        training_type = self.config.training.type()
-        
-        common_args = {
-            "model": model, "optimizer": optimizer, "scheduler": scheduler,
-            "device": device, "grad_clip_norm": self.config.training.grad_clip_norm(), "rank": rank,
-        }
-        
-        if training_type == "distillation":
-            return providers.Factory(
-                DistillationTrainer,
-                criterion=self.distillation_loss,
-                teacher_model=self.teacher_model,
-                **common_args
-            )
-        else: # standard or distributed
-            return providers.Factory(
-                BreakthroughTrainer,
-                criterion=self.standard_loss,
-                **common_args
-            )
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    # --- トレーナー定義 (静的に両方定義する) ---
+    standard_trainer = providers.Factory(
+        BreakthroughTrainer,
+        criterion=standard_loss,
+        grad_clip_norm=config.training.grad_clip_norm,
+    )
+
+    distillation_trainer = providers.Factory(
+        DistillationTrainer,
+        criterion=distillation_loss,
+        teacher_model=teacher_model,
+        grad_clip_norm=config.training.grad_clip_norm,
+    )
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 
 class AppContainer(containers.DeclarativeContainer):

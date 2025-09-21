@@ -13,9 +13,7 @@ from torch.utils.data import DataLoader, random_split, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.utils.rnn import pad_sequence
 from torch.nn.parallel import DistributedDataParallel as DDP
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 from functools import partial
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 from app.containers import TrainingContainer
 from snn_research.data.datasets import DataFormat, Vocabulary, get_dataset_class
@@ -73,7 +71,9 @@ def main_worker(rank, world_size, container, args):
         vocab = container.vocabulary()
         dataset_class = DistillationDataset if is_distillation else get_dataset_class(DataFormat(container.config.data.format()))
         text_iterator = (item for item in dataset_class(container.config.data.path())) if is_distillation else dataset_class.extract_texts(container.config.data.path())
-        vocab.build_vocab(text_iterator)
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        vocab.build_vocab(text_iterator, max_size=container.config.data.max_vocab_size())
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         torch.save(vocab, vocab_path)
         print(f"✅ 語彙を構築しました。語彙数: {vocab.vocab_size}")
 
@@ -88,12 +88,10 @@ def main_worker(rank, world_size, container, args):
     
     sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True) if is_distributed else None
     
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     _collate_fn = partial(collate_fn, pad_id=vocab.pad_id)
     if is_distillation:
         teacher_tokenizer = container.teacher_tokenizer()
         _collate_fn = partial(distillation_collate_fn, student_vocab=vocab, teacher_tokenizer=teacher_tokenizer)
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     dataloader = DataLoader(train_dataset, batch_size=container.config.training.batch_size(),
                               sampler=sampler, collate_fn=_collate_fn, num_workers=2, shuffle=(sampler is None))

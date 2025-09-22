@@ -95,6 +95,35 @@ class InstructionDataset(SNNBaseDataset):
             if 'input' in item and item['input']: yield item['input']
             yield item['output']
 
+class DistillationDataset(SNNBaseDataset):
+    """事前計算された教師モデルのロジットを読み込むためのデータセット"""
+    def __init__(self, file_path: str, data_dir: str, tokenizer: PreTrainedTokenizerBase, max_seq_len: int):
+        super().__init__(file_path, tokenizer, max_seq_len)
+        self.data_dir = data_dir
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        item = self.data[idx]
+        
+        # 学生モデル用の入力とターゲットを作成
+        tokenized = self._encode_text(item['text'])
+        input_ids = tokenized['input_ids'].squeeze(0)
+        
+        student_input = input_ids[:-1]
+        student_target = input_ids[1:]
+        
+        # 事前計算された教師のロジットをロード
+        logits_path = os.path.join(self.data_dir, item['logits_path'])
+        teacher_logits = torch.load(logits_path).to(torch.float32)
+
+        # 学生と教師のシーケンス長を合わせる
+        min_len = min(student_input.size(0), teacher_logits.size(0))
+        
+        student_input = student_input[:min_len]
+        student_target = student_target[:min_len]
+        teacher_logits = teacher_logits[:min_len]
+        
+        return student_input, student_target, teacher_logits
+
 def get_dataset_class(data_format: DataFormat) -> type[SNNBaseDataset]:
     format_map = {
         DataFormat.SIMPLE_TEXT: SimpleTextDataset,

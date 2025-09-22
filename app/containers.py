@@ -5,19 +5,16 @@
 # - プロジェクト全体の依存関係を一元管理する。
 # - 設定ファイルに基づいてオブジェクトを生成・設定する。
 # - 学習用とアプリ用のコンテナを分離し、関心を分離。
-# - 学習安定化のため、ウォームアップ付きの学習率スケジューラを導入。
+# - 独自Vocabularyを廃止し、Hugging Face Tokenizerに全面的に移行。
 
 from dependency_injector import containers, providers
 from torch.optim import AdamW
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # プロジェクト内モジュールのインポート
 from snn_research.core.snn_core import BreakthroughSNN
 from snn_research.deployment import SNNInferenceEngine
-from snn_research.data.datasets import Vocabulary
 from snn_research.training.losses import CombinedLoss, DistillationLoss
 from snn_research.training.trainers import BreakthroughTrainer, DistillationTrainer
 from .services.chat_service import ChatService
@@ -27,12 +24,17 @@ class TrainingContainer(containers.DeclarativeContainer):
     """学習に関連するオブジェクトの依存関係を管理するコンテナ。"""
     config = providers.Configuration()
 
-    # --- データ関連 ---
-    vocabulary = providers.Factory(Vocabulary)
+    # --- トークナイザ ---
+    # 蒸留時はteacherとstudentで同じものを使用する
+    tokenizer = providers.Factory(
+        AutoTokenizer.from_pretrained,
+        pretrained_model_name_or_path=config.training.distillation.teacher_model
+    )
 
     # --- モデル関連 ---
     snn_model = providers.Factory(
         BreakthroughSNN,
+        vocab_size=tokenizer.provided.vocab_size,
         d_model=config.model.d_model,
         d_state=config.model.d_state,
         num_layers=config.model.num_layers,
@@ -46,12 +48,11 @@ class TrainingContainer(containers.DeclarativeContainer):
         lr=config.training.learning_rate,
     )
     
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     # --- 学習率スケジューラ (ウォームアップ付き) ---
     warmup_scheduler = providers.Factory(
         LinearLR,
         optimizer=optimizer,
-        start_factor=1e-3, # 開始時の学習率を通常時の0.001倍にする
+        start_factor=1e-3,
         total_iters=config.training.warmup_epochs,
     )
     
@@ -67,14 +68,13 @@ class TrainingContainer(containers.DeclarativeContainer):
         schedulers=providers.List(warmup_scheduler, main_scheduler),
         milestones=providers.List(config.training.warmup_epochs),
     )
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     # --- 損失関数 ---
     standard_loss = providers.Factory(
         CombinedLoss,
         ce_weight=config.training.loss.ce_weight,
         spike_reg_weight=config.training.loss.spike_reg_weight,
-        pad_id=0, # 後から設定
+        pad_id=tokenizer.provided.pad_token_id.optional(), # .optional() for cases where pad_token is None initially
     )
     distillation_loss = providers.Factory(
         DistillationLoss,
@@ -82,14 +82,10 @@ class TrainingContainer(containers.DeclarativeContainer):
         distill_weight=config.training.distillation.loss.distill_weight,
         spike_reg_weight=config.training.distillation.loss.spike_reg_weight,
         temperature=config.training.distillation.loss.temperature,
-        student_pad_id=0, # 後から設定
+        student_pad_id=tokenizer.provided.pad_token_id.optional(),
     )
     
     # --- 蒸留用教師モデル ---
-    teacher_tokenizer = providers.Factory(
-        AutoTokenizer.from_pretrained,
-        pretrained_model_name_or_path=config.training.distillation.teacher_model
-    )
     teacher_model = providers.Factory(
         AutoModelForCausalLM.from_pretrained,
         pretrained_model_name_or_path=config.training.distillation.teacher_model

@@ -3,6 +3,7 @@
 # 
 # 機能:
 # - snn_coreとknowledge_distillationから損失関数クラスを移動・集約。
+# - 蒸留時にTokenizerを統一したため、DistillationLoss内の不整合対応ロジックを削除。
 
 import torch
 import torch.nn as nn
@@ -13,7 +14,7 @@ class CombinedLoss(nn.Module):
     """クロスエントロピー損失とスパイク発火率の正則化を組み合わせた損失関数。"""
     def __init__(self, ce_weight: float, spike_reg_weight: float, pad_id: int, target_spike_rate: float = 0.02):
         super().__init__()
-        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id)
+        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
         self.weights = {'ce': ce_weight, 'spike_reg': spike_reg_weight}
         self.target_spike_rate = target_spike_rate
 
@@ -35,25 +36,17 @@ class DistillationLoss(nn.Module):
         super().__init__()
         self.temperature = temperature
         self.weights = {'ce': ce_weight, 'distill': distill_weight, 'spike_reg': spike_reg_weight}
-        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=student_pad_id)
+        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=student_pad_id if student_pad_id is not None else -100)
         self.distill_loss_fn = nn.KLDivLoss(reduction='batchmean', log_target=False)
 
     def forward(self, student_logits: torch.Tensor, teacher_logits: torch.Tensor,
                 targets: torch.Tensor, spikes: torch.Tensor) -> Dict[str, torch.Tensor]:
 
+        # StudentとTeacherでTokenizerを統一したため、logitsの形状は一致するはず
+        assert student_logits.shape == teacher_logits.shape, \
+            f"Shape mismatch! Student: {student_logits.shape}, Teacher: {teacher_logits.shape}"
+
         ce_loss = self.ce_loss_fn(student_logits.view(-1, student_logits.size(-1)), targets.view(-1))
-
-        if student_logits.size(-1) != teacher_logits.size(-1):
-            if student_logits.size(-1) < teacher_logits.size(-1):
-                teacher_logits = teacher_logits[:, :, :student_logits.size(-1)]
-            else:
-                vocab_diff = student_logits.size(-1) - teacher_logits.size(-1)
-                padding = torch.zeros(teacher_logits.size(0), teacher_logits.size(1), vocab_diff, device=teacher_logits.device)
-                teacher_logits = torch.cat([teacher_logits, padding], dim=-1)
-
-        if student_logits.shape[1] != teacher_logits.shape[1]:
-            teacher_logits = F.interpolate(teacher_logits.transpose(1, 2), size=student_logits.shape[1],
-                                           mode='linear', align_corners=False).transpose(1, 2)
         
         soft_student_log_probs = F.log_softmax(student_logits / self.temperature, dim=-1)
         soft_teacher_probs = F.softmax(teacher_logits / self.temperature, dim=-1)

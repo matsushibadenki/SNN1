@@ -1,7 +1,9 @@
 # matsushibadenki/snn/train.py
-# DIコンテナを利用した、統合学習実行スクリプト (最終修正版)
+# DIコンテナを利用した、統合学習実行スクリプト (データ形式動的対応版)
 #
 # 変更点:
+# - SNN-Learning-Data-Format-Specification.md に基づき、--data_format引数を追加。
+# - --data_format の値に応じて、snn_research.data.datasetsから適切なDatasetクラスを動的に読み込むように修正。
 # - snn_modelのインスタンス化時に、設定ファイルから読み込んだモデル設定を正しく渡すように修正。
 
 import os
@@ -18,10 +20,8 @@ from functools import partial
 from app.containers import TrainingContainer
 from snn_research.data.datasets import DataFormat, Vocabulary, get_dataset_class
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 # --- PyTorchの異常検出モードを有効化 ---
 torch.autograd.set_detect_anomaly(True)
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 # --- (set_seed, collate_fn, DistillationDataset, distillation_collate_fn のコードは変更なし) ---
 def set_seed(seed: int):
@@ -74,18 +74,39 @@ def main_worker(rank, world_size, container, args):
     if rank in [-1, 0]:
         print("📖 語彙を構築中...")
         vocab = container.vocabulary()
-        dataset_class = DistillationDataset if is_distillation else get_dataset_class(DataFormat(container.config.data.format()))
-        text_iterator = (item for item in dataset_class(container.config.data.path())) if is_distillation else dataset_class.extract_texts(container.config.data.path())
+        
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # データ形式に応じて適切なDatasetクラスを取得
+        data_format = DataFormat(container.config.data.format())
+        dataset_class = get_dataset_class(data_format)
+        
+        # 蒸留の場合はテキスト抽出方法が異なる
+        if is_distillation:
+             # DistillationDatasetは 'simple_text' 形式の {"text": "..."} を想定
+            distillation_dataset = DistillationDataset(container.config.data.path())
+            text_iterator = (item for item in distillation_dataset)
+        else:
+            text_iterator = dataset_class.extract_texts(container.config.data.path())
+
         vocab.build_vocab(text_iterator, max_size=container.config.data.max_vocab_size())
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        
         torch.save(vocab, vocab_path)
         print(f"✅ 語彙を構築しました。語彙数: {vocab.vocab_size}")
 
     if is_distributed: dist.barrier()
     vocab = torch.load(vocab_path, map_location='cpu', weights_only=False)
 
-    dataset = (DistillationDataset(container.config.data.path()) if is_distillation 
-               else get_dataset_class(DataFormat(container.config.data.format()))(container.config.data.path(), vocab))
-
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    # データ形式と学習タイプに応じてDatasetインスタンスを作成
+    if is_distillation:
+        dataset = DistillationDataset(container.config.data.path())
+    else:
+        data_format = DataFormat(container.config.data.format())
+        dataset_class = get_dataset_class(data_format)
+        dataset = dataset_class(container.config.data.path(), vocab)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    
     val_split = int(len(dataset) * container.config.data.split_ratio())
     train_dataset, _ = random_split(dataset, [len(dataset) - val_split, val_split])
     
@@ -167,11 +188,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SNNモデルの統合学習スクリプト")
     parser.add_argument("--config", type=str, default="configs/base_config.yaml", help="設定ファイルのパス")
     parser.add_argument("--data_path", type=str, help="データセットのパス (設定ファイルを上書き)")
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    parser.add_argument("--data_format", type=str, choices=[f.value for f in DataFormat], help="データ形式 (設定ファイルを上書き)")
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     args = parser.parse_args()
 
     container = TrainingContainer()
     container.config.from_yaml(args.config)
     if args.data_path: container.config.data.path.from_value(args.data_path)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    if args.data_format: container.config.data.format.from_value(args.data_format)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     set_seed(container.config.seed())
 

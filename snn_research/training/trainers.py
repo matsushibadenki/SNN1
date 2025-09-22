@@ -5,6 +5,7 @@
 # - main.pyとknowledge_distillation.pyからTrainerクラスを移動・集約。
 # - 分散学習に対応したチェックポイント機能などを整備。
 # - mypyエラー解消のため、型ヒントを追加・修正。
+# - DistillationTrainerを事前計算ロジットを使用するように簡素化。
 
 import torch
 import torch.nn as nn
@@ -14,9 +15,7 @@ import collections
 from tqdm import tqdm  # type: ignore
 from typing import Tuple, Dict, Any, Optional
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-from snn_research.training.losses import CombinedLoss
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+from snn_research.training.losses import CombinedLoss, DistillationLoss
 
 class BreakthroughTrainer:
     """汎用性と拡張性を高めたSNNの統合トレーニングシステム。"""
@@ -34,12 +33,7 @@ class BreakthroughTrainer:
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
         self.model.train(is_train)
         
-        # 適切なバッチのアンパッキング
-        if len(batch) == 2:
-            input_ids, target_ids = [t.to(self.device) for t in batch]
-        else:
-            # DistillationTrainerからの呼び出しを想定
-            input_ids, target_ids, _, _ = [t.to(self.device) for t in batch]
+        input_ids, target_ids = [t.to(self.device) for t in batch]
 
         with torch.set_grad_enabled(is_train):
             logits, spike_data = self.model(input_ids, return_spikes=True)
@@ -54,20 +48,16 @@ class BreakthroughTrainer:
         
         with torch.no_grad():
             preds = torch.argmax(logits, dim=-1)
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-            # mypyエラー(union-attr)対策
             if isinstance(self.criterion, CombinedLoss):
-                mask = target_ids != self.criterion.ce_loss_fn.ignore_index
-                accuracy = (preds[mask] == target_ids[mask]).sum().float() / mask.sum() if mask.sum() > 0 else 0.0
+                ignore_idx = self.criterion.ce_loss_fn.ignore_index
+                mask = target_ids != ignore_idx
+                accuracy = (preds[mask] == target_ids[mask]).sum().float() / mask.sum() if mask.sum() > 0 else torch.tensor(0.0)
                 loss_dict['accuracy'] = accuracy
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
     def train_epoch(self, dataloader: DataLoader) -> Dict[str, float]:
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         total_metrics: Dict[str, float] = collections.defaultdict(float)
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         num_batches = len(dataloader)
         progress_bar = tqdm(dataloader, desc="Training", disable=(self.rank not in [-1, 0]))
         
@@ -88,34 +78,31 @@ class BreakthroughTrainer:
             torch.save(state, path)
             print(f"✅ チェックポイントを '{path}' に保存しました。")
 
-
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 class DistillationTrainer(BreakthroughTrainer):
-    """知識蒸留に特化したトレーナー。"""
-    def __init__(self, teacher_model: Optional[nn.Module], *args: Any, **kwargs: Any):
+    """知識蒸留に特化したトレーナー（事前計算ロジット使用版）。"""
+    def __init__(self, *args: Any, **kwargs: Any):
+        # teacher_modelの依存を削除
+        if 'teacher_model' in kwargs:
+            del kwargs['teacher_model']
         super().__init__(*args, **kwargs)
-        self.teacher_model = teacher_model.to(self.device) if teacher_model and self.rank in [-1, 0] else None
-        if self.teacher_model: self.teacher_model.eval()
 
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
         self.model.train(is_train)
-        student_input, student_target, teacher_input, teacher_mask = [t.to(self.device) for t in batch]
-        
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-        teacher_logits = None
-        if self.teacher_model:
-            with torch.no_grad():
-                teacher_logits = self.teacher_model(input_ids=teacher_input, attention_mask=teacher_mask).logits
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # データローダーから事前計算済みロジットを受け取る
+        student_input, student_target, teacher_logits = [t.to(self.device) for t in batch]
 
         with torch.set_grad_enabled(is_train):
             student_logits, spike_data = self.model(student_input, return_spikes=True)
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-            if teacher_logits is not None:
-                loss_dict = self.criterion(student_logits, teacher_logits, student_target, spike_data)
-            else:
-                # teacher_modelがない場合のフォールバック（理論上は発生しない）
-                loss_dict = {'total': torch.tensor(0.0, device=self.device)}
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+            
+            # 損失関数に渡す
+            assert isinstance(self.criterion, DistillationLoss)
+            loss_dict = self.criterion(
+                student_logits=student_logits,
+                teacher_logits=teacher_logits,
+                targets=student_target,
+                spikes=spike_data
+            )
         
         if is_train:
             self.optimizer.zero_grad()
@@ -125,3 +112,4 @@ class DistillationTrainer(BreakthroughTrainer):
             self.optimizer.step()
         
         return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️

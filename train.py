@@ -1,26 +1,24 @@
 # matsushibadenki/snn/train.py
-# DIコンテナを利用した、統合学習実行スクリプト (Tokenizer移行版)
+# DIコンテナを利用した、統合学習実行スクリプト (蒸留パイプライン更新版)
 #
 # 変更点:
-# - 独自Vocabularyの構築・保存ロジックを完全に削除。
-# - DIコンテナからHugging Face Tokenizerを取得して使用するように変更。
-# - データセットの初期化、collate_fnをTokenizerベースの処理に更新。
-# - 知識蒸留時のcollate_fnを簡素化。
-# - チェックポイントにtokenizerの名前を保存するように変更。
+# - 蒸留学習時に、事前計算されたロジットを読み込む `DistillationDataset` を使用するように変更。
+# - 蒸留用のcollate_fnを、事前計算ロジットをバッチ処理するように更新。
+# - データパスの指定を、蒸留データセットのディレクトリ構造に合わせて修正。
 
 import os
 import argparse
 import torch
 import torch.distributed as dist
-from torch.utils.data import DataLoader, random_split, Dataset
+from torch.utils.data import DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.utils.rnn import pad_sequence
 from torch.nn.parallel import DistributedDataParallel as DDP
 from functools import partial
-from transformers import PreTrainedTokenizerBase
+from typing import List, Tuple
 
 from app.containers import TrainingContainer
-from snn_research.data.datasets import DataFormat, get_dataset_class, SNNBaseDataset
+from snn_research.data.datasets import DataFormat, get_dataset_class, DistillationDataset
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -33,34 +31,20 @@ def set_seed(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def collate_fn(batch, pad_id):
+def standard_collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]], pad_id: int):
     inputs, targets = zip(*batch)
     padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=pad_id)
     padded_targets = pad_sequence(targets, batch_first=True, padding_value=pad_id)
     return padded_inputs, padded_targets
 
-def distillation_collate_fn(batch, tokenizer: PreTrainedTokenizerBase):
-    # 生のテキストバッチをTokenizerでまとめて処理
-    texts = [item['text'] for item in batch]
+def distillation_collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]], pad_id: int):
+    inputs, targets, teacher_logits = zip(*batch)
     
-    tokenized = tokenizer(
-        texts,
-        padding=True,
-        truncation=True,
-        max_length=128,
-        return_tensors="pt"
-    )
-
-    input_ids = tokenized['input_ids']
-    attention_mask = tokenized['attention_mask']
+    padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=pad_id)
+    padded_targets = pad_sequence(targets, batch_first=True, padding_value=pad_id)
+    padded_teacher_logits = pad_sequence(teacher_logits, batch_first=True, padding_value=0.0) # ロジットは0でパディング
     
-    # student_targetはinput_idsを1つずらしたもの
-    student_target = input_ids.clone()
-    # パディング部分は損失計算から除外
-    student_target[~attention_mask.bool()] = tokenizer.pad_token_id
-    
-    return input_ids, student_target, input_ids, attention_mask
-
+    return padded_inputs, padded_targets, padded_teacher_logits
 
 def main_worker(rank, world_size, container, args):
     is_distributed = container.config.training.type() != "standard"
@@ -70,49 +54,40 @@ def main_worker(rank, world_size, container, args):
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = '12355'
         dist.init_process_group("nccl" if torch.cuda.is_available() else "gloo", rank=rank, world_size=world_size)
-        if torch.cuda.is_available():
-            torch.cuda.set_device(rank)
+        if torch.cuda.is_available(): torch.cuda.set_device(rank)
 
-    # DIコンテナからTokenizerを取得
     tokenizer = container.tokenizer()
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
 
-    dataset: SNNBaseDataset | RawTextDataset
     if is_distillation:
-        # 蒸留時は、getitemがテキスト辞書を返すような特殊なDatasetが必要
-        class RawTextDataset(Dataset):
-            def __init__(self, file_path):
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    self.data = [line for line in f if line.strip()]
-            def __len__(self): return len(self.data)
-            def __getitem__(self, idx): return {'text': self.data[idx]}
-        dataset = RawTextDataset(container.config.data.path())
+        # 蒸留データセットのパスを解決
+        data_dir = container.config.data.path()
+        jsonl_path = os.path.join(data_dir, "distillation_data.jsonl")
+        dataset = DistillationDataset(
+            file_path=jsonl_path,
+            data_dir=data_dir,
+            tokenizer=tokenizer,
+            max_seq_len=container.config.model.time_steps()
+        )
+        _collate_fn = partial(distillation_collate_fn, pad_id=tokenizer.pad_token_id)
     else:
-        data_format = DataFormat(container.config.data.format())
-        dataset_class = get_dataset_class(data_format)
+        dataset_class = get_dataset_class(DataFormat(container.config.data.format()))
         dataset = dataset_class(
             file_path=container.config.data.path(),
             tokenizer=tokenizer,
             max_seq_len=container.config.model.time_steps()
         )
+        _collate_fn = partial(standard_collate_fn, pad_id=tokenizer.pad_token_id)
     
     val_split = int(len(dataset) * container.config.data.split_ratio())
     train_dataset, _ = random_split(dataset, [len(dataset) - val_split, val_split])
     
     sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True) if is_distributed else None
     
-    if is_distillation:
-        _collate_fn = partial(distillation_collate_fn, tokenizer=tokenizer)
-    else:
-        _collate_fn = partial(collate_fn, pad_id=tokenizer.pad_token_id)
-
     dataloader = DataLoader(train_dataset, batch_size=container.config.training.batch_size(),
                               sampler=sampler, collate_fn=_collate_fn, num_workers=2, shuffle=(sampler is None))
 
-    # --- デバイスの自動選択ロジック ---
-    if is_distributed and torch.cuda.is_available():
-        device = f"cuda:{rank}"
+    if is_distributed and torch.cuda.is_available(): device = f"cuda:{rank}"
     else:
         device = container.config.device()
         if device == "cuda" and not torch.cuda.is_available(): device = "cpu"
@@ -129,20 +104,13 @@ def main_worker(rank, world_size, container, args):
         'n_head': container.config.model.n_head(),
     }
 
-    if is_distributed:
-        model = DDP(model, device_ids=[rank] if torch.cuda.is_available() else None)
+    if is_distributed: model = DDP(model, device_ids=[rank] if torch.cuda.is_available() else None)
     
     optimizer = container.optimizer(params=model.parameters())
     scheduler = container.scheduler(optimizer=optimizer) if container.config.training.use_scheduler() else None
 
-    trainer_args = {
-        "model": model, "optimizer": optimizer, "scheduler": scheduler,
-        "device": device, "rank": rank,
-    }
-    if is_distillation:
-        trainer = container.distillation_trainer(**trainer_args)
-    else:
-        trainer = container.standard_trainer(**trainer_args)
+    trainer_args = {"model": model, "optimizer": optimizer, "scheduler": scheduler, "device": device, "rank": rank}
+    trainer = container.distillation_trainer(**trainer_args) if is_distillation else container.standard_trainer(**trainer_args)
 
     if rank in [-1, 0]: print(f"\n🔥 {container.config.training.type()} 学習を開始します...")
     for epoch in range(container.config.training.epochs()):
@@ -184,3 +152,4 @@ if __name__ == "__main__":
     else:
         print(f"単一デバイスで '{training_type}' 学習を開始します。")
         main_worker(-1, 1, container, args)
+

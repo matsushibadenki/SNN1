@@ -5,10 +5,13 @@
 # - プロジェクト全体の依存関係を一元管理する。
 # - 設定ファイルに基づいてオブジェクトを生成・設定する。
 # - 学習用とアプリ用のコンテナを分離し、関心を分離。
+# - 学習安定化のため、ウォームアップ付きの学習率スケジューラを導入。
 
 from dependency_injector import containers, providers
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # プロジェクト内モジュールのインポート
@@ -42,10 +45,29 @@ class TrainingContainer(containers.DeclarativeContainer):
         AdamW,
         lr=config.training.learning_rate,
     )
-    scheduler = providers.Factory(
-        CosineAnnealingLR,
-        T_max=config.training.epochs,
+    
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    # --- 学習率スケジューラ (ウォームアップ付き) ---
+    warmup_scheduler = providers.Factory(
+        LinearLR,
+        optimizer=optimizer,
+        start_factor=1e-3, # 開始時の学習率を通常時の0.001倍にする
+        total_iters=config.training.warmup_epochs,
     )
+    
+    main_scheduler = providers.Factory(
+        CosineAnnealingLR,
+        optimizer=optimizer,
+        T_max=config.training.epochs - config.training.warmup_epochs,
+    )
+
+    scheduler = providers.Factory(
+        SequentialLR,
+        optimizer=optimizer,
+        schedulers=providers.List(warmup_scheduler, main_scheduler),
+        milestones=providers.List(config.training.warmup_epochs),
+    )
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     # --- 損失関数 ---
     standard_loss = providers.Factory(
@@ -73,7 +95,6 @@ class TrainingContainer(containers.DeclarativeContainer):
         pretrained_model_name_or_path=config.training.distillation.teacher_model
     )
 
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     # --- トレーナー定義 (静的に両方定義する) ---
     standard_trainer = providers.Factory(
         BreakthroughTrainer,
@@ -87,7 +108,6 @@ class TrainingContainer(containers.DeclarativeContainer):
         teacher_model=teacher_model,
         grad_clip_norm=config.training.grad_clip_norm,
     )
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 
 class AppContainer(containers.DeclarativeContainer):

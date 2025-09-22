@@ -1,4 +1,4 @@
-# **SNNベース AIチャットシステム (v2.1 \- LangChain連携プロトタイプ実装)**
+# **SNNベース AIチャットシステム (v2.2 \- 高速知識蒸留パイプライン実装)**
 
 ## **1\. 概要**
 
@@ -10,14 +10,6 @@
 * **依存性の注入 (DI):** dependency-injector を用い、クラス間の依存関係を外部コンテナで管理することで、疎結合でテスト容易性の高い設計を実現。  
 * **設定の外部化:** モデルの構造や学習パラメータを configs/ ディレクトリのYAMLファイルで管理し、コードの変更なしに実験条件を変更可能に。
 
-### **1.2. ディレクトリ構成**
-
-* **app/**: Gradio UI、LangChainアダプタなど、SNNモデルを利用するアプリケーション層。  
-* **configs/**: プロジェクト全体の設定を管理するYAMLファイル。  
-* **snn\_research/**: SNNモデルのコアロジック、データセット、学習アルゴリズムなど、研究開発に関わるコードを集約。  
-* **scripts/**: データ準備やベンチマーク実行など、独立して実行可能なスクリプト。  
-* **train.py**: 全ての学習（通常、分散、蒸留）を統合した単一の実行スクリプト。
-
 ## **2\. 使い方 (How to Use)**
 
 ### **ステップ1: 環境設定**
@@ -26,13 +18,22 @@
 
 pip install \-r requirements.txt
 
-### **ステップ2: データ準備 (オプション)**
+### **ステップ2: データ準備**
+
+#### **2.1. 通常学習用データ (オプション)**
 
 WikiTextのような大規模データセットを準備する場合、以下のスクリプトを実行します。
 
 python \-m scripts.data\_preparation
 
-これにより、data/wikitext-103\_train.jsonl が生成されます。
+#### **2.2. 知識蒸留用データ (必須)**
+
+知識蒸留を行う前に、教師モデルのロジットを事前計算する必要があります。
+
+\# 例: sample\_data.jsonl から蒸留用データを作成し、 precomputed\_data/ ディレクトリに保存  
+python \-m scripts.prepare\_distillation\_data \\  
+    \--input\_file data/sample\_data.jsonl \\  
+    \--output\_dir precomputed\_data/
 
 ### **ステップ3: モデルの学習**
 
@@ -45,42 +46,22 @@ python train.py \--config configs/base\_config.yaml \--data\_path data/sample\_d
 
 **例2: 知識蒸留 (GPUが2つ以上ある場合)**
 
-\# configs/base\_config.yaml の training.type を "distillation" に変更  
-torchrun \--nproc\_per\_node=2 train.py \--config configs/base\_config.yaml \--data\_path data/sample\_data.jsonl
+\# 1\. configs/base\_config.yaml の training.type を "distillation" に変更  
+\# 2\. 事前計算済みデータディレクトリを指定して学習を実行  
+torchrun \--nproc\_per\_node=2 train.py \\  
+    \--config configs/base\_config.yaml \\  
+    \--data\_path precomputed\_data/
 
 ### **ステップ4: 対話アプリケーションの起動**
 
-学習済みのモデルを使って、GradioベースのチャットUIを起動します。2種類のプロトタイプが利用可能です。
-
-#### **4.1. シンプルな対話AI**
-
-モデルの基本的な生成能力を試すための、シンプルなチャットUIです。
+学習済みのモデルを使って、GradioベースのチャットUIを起動します。
 
 python \-m app.main \--model\_path breakthrough\_snn\_model.pth
 
-ブラウザで http://0.0.0.0:7860 を開いてください。
-
-#### **4.2. LangChain連携AI (構造化応答)**
-
-モデルをLangChainフレームワークに統合し、プロンプトテンプレートを用いてより構造化された応答を生成するデモです。
-
-python \-m app.langchain\_main \--model\_path breakthrough\_snn\_model.pth
-
-ブラウザで http://0.0.0.0:7861 を開いてください。
+http://0.0.0.0:7860 を開いてください。
 
 ### **ステップ5: ベンチマークによる性能評価**
 
-SST-2データセットを用いて、SNNモデルとANNベースラインモデルの感情分析性能を比較評価します。
+SST-2データセットを用いて、SNNモデルとANNベースラインモデルの性能を比較評価します。
 
-python \-m scripts.run\_benchmark
-
-## **3\. 技術スタック**
-
-| カテゴリ | 技術 |
-| :---- | :---- |
-| プログラミング言語 | Python 3.10+ |
-| 機械学習バックエンド | PyTorch 2.0+ |
-| SNNフレームワーク | SpikingJelly |
-| DIコンテナ | dependency-injector |
-| アプリケーション | Gradio, LangChain |
-
+python \-m scripts.run\_benchmark  

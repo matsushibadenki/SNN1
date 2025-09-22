@@ -2,6 +2,9 @@
 # SNNモデルの定義、次世代ニューロンなど、中核となるロジックを集約したライブラリ
 #
 # 変更点:
+# - ロードマップ フェーズ2「2.3. アーキテクチャの進化」に対応。
+# - SpikingTemporalAttention モジュールを新規実装。
+# - BreakthroughSNN に SpikingTemporalAttention を統合し、SSM層の出力を処理するように変更。
 # - mypyエラー解消のため、型ヒントを全体的に追加・修正。
 # - spikingjellyとtqdmのimportに # type: ignore を追加。
 
@@ -169,7 +172,7 @@ class EventDrivenSSMLayer(nn.Module):
         self.h_state, self.state_v_mem, self.output_v_mem = h.detach(), state_v.detach(), output_v.detach()
         return torch.stack(outputs, dim=1)
 
-# ... (SpikingTemporalAttention, BreakthroughSNN の実装は省略)
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 class SpikingTemporalAttention(nn.Module):
     """
     スパイク列の時間的関係性に注意を向けるアテンション機構。
@@ -237,6 +240,7 @@ class BreakthroughSNN(nn.Module):
         
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.spike_encoder = TTFSEncoder(d_model=d_model, time_steps=time_steps)
+        
         self.ssm_layers = nn.ModuleList([EventDrivenSSMLayer(d_model, d_state) for _ in range(num_layers)])
         
         self.temporal_attention = SpikingTemporalAttention(d_model=d_model, n_head=n_head)
@@ -251,10 +255,17 @@ class BreakthroughSNN(nn.Module):
         for layer in self.ssm_layers:
             hidden_states = layer(hidden_states)
             
+        # SSM層の後に時間的アテンションを適用
         hidden_states = self.temporal_attention(hidden_states)
         
+        # 時間方向にスパイクを積分 (平均化)
         time_integrated = hidden_states.mean(dim=1)
         logits = self.output_projection(time_integrated)
         
-        functional.reset_net(self) # Reset SpikingJelly modules if any
-        return logits, hidden_states
+        # SpikingJellyのモジュール状態をリセット
+        functional.reset_net(self)
+        
+        if return_spikes:
+            return logits, hidden_states
+        return logits, torch.empty(0) # スパイクを返さない場合
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️

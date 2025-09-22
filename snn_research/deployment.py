@@ -3,6 +3,7 @@
 #
 # 変更点:
 # - mypyエラー解消のため、型ヒントを追加。
+# - 独自Vocabularyを廃止し、Hugging Face Tokenizerを使用するようにSNNInferenceEngineを修正。
 
 import torch
 import torch.nn as nn
@@ -12,6 +13,7 @@ import time
 from typing import Dict, Any, List
 from enum import Enum
 from dataclasses import dataclass
+from transformers import AutoTokenizer
 
 # --- SNN 推論エンジン ---
 class SNNInferenceEngine:
@@ -21,45 +23,48 @@ class SNNInferenceEngine:
             raise FileNotFoundError(f"モデルファイルが見つかりません: {model_path}")
 
         from .core.snn_core import BreakthroughSNN
-        from .data.datasets import Vocabulary
 
         self.device = torch.device(device)
         checkpoint = torch.load(model_path, map_location=self.device)
         
-        self.vocab: Vocabulary = checkpoint['vocab']
+        # チェックポイントからTokenizer名を取得してロード
+        tokenizer_name = checkpoint['tokenizer_name']
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            
         self.config: Dict[str, Any] = checkpoint['config']
         
-        self.model = BreakthroughSNN(vocab_size=self.vocab.vocab_size, **self.config).to(self.device)
+        self.model = BreakthroughSNN(vocab_size=self.tokenizer.vocab_size, **self.config).to(self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.eval()
         
     def generate(self, start_text: str, max_len: int) -> str:
-        input_ids = self.vocab.encode(start_text, add_start_end=True)[:-1]
-        input_tensor = torch.tensor([input_ids], device=self.device)
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-        generated_ids: List[int] = list(input_ids)
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # BOSトークンを先頭に付与
+        bos_token = self.tokenizer.bos_token or ''
+        input_ids = self.tokenizer.encode(f"{bos_token}{start_text}", return_tensors='pt').to(self.device)
+        
+        # SNNモデルにはgenerateメソッドがないため、手動ループで実装
+        generated_ids = input_ids[0].tolist()
+        input_tensor = input_ids
         
         with torch.no_grad():
             for _ in range(max_len):
-                logits, _ = self.model(input_tensor, return_spikes=True)
+                logits, _ = self.model(input_tensor, return_spikes=False)
                 next_token_logits = logits[:, -1, :]
-                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 next_token_id = int(torch.argmax(next_token_logits, dim=-1).item())
-                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-                if next_token_id == self.vocab.special_tokens["<END>"]: break
+                
+                if next_token_id == self.tokenizer.eos_token_id:
+                    break
+                    
                 generated_ids.append(next_token_id)
                 input_tensor = torch.cat([input_tensor, torch.tensor([[next_token_id]], device=self.device)], dim=1)
         
-        return self.vocab.decode(generated_ids)
+        return self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+
 
 # --- ニューロモーフィック デプロイメント機能 ---
-# (元のdeployment.pyからコードをここにペースト)
 import torch.nn.functional as F
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-# from torch.nn.utils import prune # mypyでエラーになるためコメントアウト
-# import torch.quantization # mypyでエラーになるためコメントアウト
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 class NeuromorphicChip(Enum):
     INTEL_LOIHI = "intel_loihi"
@@ -79,15 +84,10 @@ class AdaptiveQuantizationPruning:
         if pruning_ratio <= 0: return
         for module in model.modules():
             if isinstance(module, nn.Linear):
-                # prune.l1_unstructured(module, name="weight", amount=pruning_ratio)
-                # prune.remove(module, 'weight')
                 pass
     
     def apply_quantization(self, model: nn.Module, bits: int) -> nn.Module:
         if bits >= 32: return model
-        if bits == 8:
-            # return torch.quantization.quantize_dynamic(model, {nn.Linear}, dtype=torch.qint8)
-            pass
         return model
 
 class ContinualLearningEngine:
@@ -99,7 +99,7 @@ class ContinualLearningEngine:
     def online_learning_step(self, new_data: torch.Tensor, new_targets: torch.Tensor) -> Dict[str, float]:
         self.model.train()
         self.optimizer.zero_grad()
-        outputs, _ = self.model(new_data) # BreakthroughSNNは2つの値を返す
+        outputs, _ = self.model(new_data)
         ce_loss = F.cross_entropy(outputs.view(-1, outputs.size(-1)), new_targets.view(-1))
         with torch.no_grad(): teacher_outputs, _ = self.teacher_model(new_data)
         distillation_loss = F.kl_div(
@@ -113,9 +113,7 @@ class ContinualLearningEngine:
         return {'total_loss': total_loss.item()}
 
 class NeuromorphicDeploymentManager:
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     deployed_models: Dict[str, Dict[str, Any]]
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     def __init__(self, profile: NeuromorphicProfile):
         self.profile = profile

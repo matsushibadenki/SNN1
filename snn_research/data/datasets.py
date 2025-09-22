@@ -5,6 +5,8 @@
 # - Hugging Face Tokenizer を使用するように全面的に刷新。
 # - 旧来の独自Vocabularyクラスを廃止し、標準的なNLPパイプラインとの互換性を向上。
 # - データ形式に応じたテキスト抽出ロジックを提供。
+# - 事前計算されたロジットを読み込むDistillationDatasetを新設。
+# - mypyエラーを解消するため、SNNBaseDatasetの型ヒントを修正。
 
 import torch
 from torch.utils.data import Dataset
@@ -37,15 +39,17 @@ class SNNBaseDataset(Dataset):
         self.data = list(load_jsonl_data(file_path))
 
     def __len__(self): return len(self.data)
-    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]: raise NotImplementedError
+    
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, ...]: raise NotImplementedError
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     def _encode_text(self, text: str) -> Dict[str, torch.Tensor]:
-        # <BOS>トークンを追加し、<EOS>トークンはターゲット側で考慮
         return self.tokenizer(
             f"{self.tokenizer.bos_token or ''}{text}",
             truncation=True,
             max_length=self.max_seq_len,
-            padding=False, # collate_fnでパディング
+            padding=False,
             return_tensors="pt"
         )
 
@@ -53,7 +57,7 @@ class SNNBaseDataset(Dataset):
     def extract_texts(file_path: str) -> Iterator[str]: raise NotImplementedError
 
 class SimpleTextDataset(SNNBaseDataset):
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
         item = self.data[idx]
         tokenized = self._encode_text(item['text'])
         input_ids = tokenized['input_ids'].squeeze(0)
@@ -64,9 +68,8 @@ class SimpleTextDataset(SNNBaseDataset):
         for item in load_jsonl_data(file_path): yield item['text']
 
 class DialogueDataset(SNNBaseDataset):
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
         item = self.data[idx]
-        # 各発話の間にEOSトークンを挟み、会話の区切りをモデルに学習させる
         eos_token = self.tokenizer.eos_token or ''
         full_conversation = f" {eos_token} ".join([turn['value'] for turn in item['conversations']])
         tokenized = self._encode_text(full_conversation)
@@ -79,7 +82,7 @@ class DialogueDataset(SNNBaseDataset):
             for turn in item['conversations']: yield turn['value']
 
 class InstructionDataset(SNNBaseDataset):
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
         item = self.data[idx]
         prompt = item['instruction']
         if 'input' in item and item['input']: prompt += f"\n{item['input']}"
@@ -127,7 +130,8 @@ class DistillationDataset(SNNBaseDataset):
 def get_dataset_class(data_format: DataFormat) -> type[SNNBaseDataset]:
     format_map = {
         DataFormat.SIMPLE_TEXT: SimpleTextDataset,
-        DataFormat.DIALOGUE: DialogueDataset,
+        Data.DIALOGUE: DialogueDataset,
         DataFormat.INSTRUCTION: InstructionDataset
     }
     return format_map[data_format]
+

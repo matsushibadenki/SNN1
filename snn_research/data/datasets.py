@@ -2,56 +2,17 @@
 # 各種データ形式に対応するデータセットクラス
 # 
 # 機能:
-# - main.pyにあったDatasetクラスと語彙クラスをこのモジュールに集約。
+# - Hugging Face Tokenizer を使用するように全面的に刷新。
+# - 旧来の独自Vocabularyクラスを廃止し、標準的なNLPパイプラインとの互換性を向上。
 # - データ形式に応じたテキスト抽出ロジックを提供。
 
 import torch
 from torch.utils.data import Dataset
-from collections import Counter
-import itertools
-from typing import List, Iterator, Dict, Any, Tuple
+from typing import Iterator, Dict, Any, Tuple
 import os
 import json
 from enum import Enum
-
-# --- 語彙クラス ---
-class Vocabulary:
-    """テキストとIDを相互変換するための語彙クラス"""
-    def __init__(self):
-        self.special_tokens = {"<PAD>": 0, "<UNK>": 1, "<START>": 2, "<END>": 3}
-        self.word2idx = self.special_tokens.copy()
-        self.idx2word = {v: k for k, v in self.word2idx.items()}
-
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-    def build_vocab(self, all_texts: Iterator[str], max_size: int = 50000):
-        all_words = itertools.chain.from_iterable(txt.lower().split() for txt in all_texts)
-        word_counts = Counter(all_words)
-        # 頻度上位の単語に絞り込む
-        most_common_words = word_counts.most_common(max_size - len(self.special_tokens))
-        
-        for word, _ in most_common_words:
-            if word not in self.word2idx:
-                idx = len(self.word2idx)
-                self.word2idx[word] = idx
-                self.idx2word[idx] = word
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-    
-    def encode(self, text: str, add_start_end: bool = True) -> List[int]:
-        tokens = [self.word2idx.get(word.lower(), self.special_tokens["<UNK>"]) for word in text.split()]
-        if add_start_end:
-            return [self.special_tokens["<START>"]] + tokens + [self.special_tokens["<END>"]]
-        return tokens
-
-    def decode(self, token_ids: List[int]) -> str:
-        ids_to_decode = [idx for idx in token_ids if idx not in (self.special_tokens["<START>"], self.special_tokens["<END>"])]
-        return " ".join([self.idx2word.get(idx, "<UNK>") for idx in ids_to_decode])
-
-    @property
-    def vocab_size(self) -> int: return len(self.word2idx)
-    
-    @property
-    def pad_id(self) -> int: return self.special_tokens["<PAD>"]
-
+from transformers import PreTrainedTokenizerBase
 
 # --- データローダーとデータ形式 ---
 class DataFormat(Enum):
@@ -70,20 +31,33 @@ def load_jsonl_data(file_path: str) -> Iterator[Dict[str, Any]]:
 # --- データセットクラス ---
 class SNNBaseDataset(Dataset):
     """全てのデータセットクラスの基底クラス"""
-    def __init__(self, file_path: str, vocab: Vocabulary):
-        self.vocab = vocab
+    def __init__(self, file_path: str, tokenizer: PreTrainedTokenizerBase, max_seq_len: int):
+        self.tokenizer = tokenizer
+        self.max_seq_len = max_seq_len
         self.data = list(load_jsonl_data(file_path))
 
     def __len__(self): return len(self.data)
     def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]: raise NotImplementedError
+    
+    def _encode_text(self, text: str) -> Dict[str, torch.Tensor]:
+        # <BOS>トークンを追加し、<EOS>トークンはターゲット側で考慮
+        return self.tokenizer(
+            f"{self.tokenizer.bos_token or ''}{text}",
+            truncation=True,
+            max_length=self.max_seq_len,
+            padding=False, # collate_fnでパディング
+            return_tensors="pt"
+        )
+
     @staticmethod
     def extract_texts(file_path: str) -> Iterator[str]: raise NotImplementedError
 
 class SimpleTextDataset(SNNBaseDataset):
     def __getitem__(self, idx):
         item = self.data[idx]
-        encoded = self.vocab.encode(item['text'])
-        return torch.tensor(encoded[:-1]), torch.tensor(encoded[1:], dtype=torch.long)
+        tokenized = self._encode_text(item['text'])
+        input_ids = tokenized['input_ids'].squeeze(0)
+        return input_ids[:-1], input_ids[1:]
 
     @staticmethod
     def extract_texts(file_path: str) -> Iterator[str]:
@@ -92,9 +66,12 @@ class SimpleTextDataset(SNNBaseDataset):
 class DialogueDataset(SNNBaseDataset):
     def __getitem__(self, idx):
         item = self.data[idx]
-        full_conversation = " ".join([turn['value'] for turn in item['conversations']])
-        encoded = self.vocab.encode(full_conversation)
-        return torch.tensor(encoded[:-1]), torch.tensor(encoded[1:], dtype=torch.long)
+        # 各発話の間にEOSトークンを挟み、会話の区切りをモデルに学習させる
+        eos_token = self.tokenizer.eos_token or ''
+        full_conversation = f" {eos_token} ".join([turn['value'] for turn in item['conversations']])
+        tokenized = self._encode_text(full_conversation)
+        input_ids = tokenized['input_ids'].squeeze(0)
+        return input_ids[:-1], input_ids[1:]
 
     @staticmethod
     def extract_texts(file_path: str) -> Iterator[str]:
@@ -107,8 +84,9 @@ class InstructionDataset(SNNBaseDataset):
         prompt = item['instruction']
         if 'input' in item and item['input']: prompt += f"\n{item['input']}"
         full_text = f"{prompt}\n{item['output']}"
-        encoded = self.vocab.encode(full_text)
-        return torch.tensor(encoded[:-1]), torch.tensor(encoded[1:], dtype=torch.long)
+        tokenized = self._encode_text(full_text)
+        input_ids = tokenized['input_ids'].squeeze(0)
+        return input_ids[:-1], input_ids[1:]
 
     @staticmethod
     def extract_texts(file_path: str) -> Iterator[str]:

@@ -40,9 +40,7 @@ class SNNBaseDataset(Dataset):
 
     def __len__(self): return len(self.data)
     
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     def __getitem__(self, idx) -> Tuple[torch.Tensor, ...]: raise NotImplementedError
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     def _encode_text(self, text: str) -> Dict[str, torch.Tensor]:
         return self.tokenizer(
@@ -130,7 +128,9 @@ class DistillationDataset(SNNBaseDataset):
 def get_dataset_class(data_format: DataFormat) -> type[SNNBaseDataset]:
     format_map = {
         DataFormat.SIMPLE_TEXT: SimpleTextDataset,
-        Data.DIALOGUE: DialogueDataset,
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        DataFormat.DIALOGUE: DialogueDataset,
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         DataFormat.INSTRUCTION: InstructionDataset
     }
     return format_map[data_format]

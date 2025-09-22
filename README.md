@@ -1,4 +1,4 @@
-# **SNNベース AIチャットシステム (v2.0 \- DI/LangChain対応版)**
+# **SNNベース AIチャットシステム (v2.1 \- LangChain連携プロトタイプ実装)**
 
 ## **1\. 概要**
 
@@ -38,25 +38,35 @@ python \-m scripts.data\_preparation
 
 新しい統合学習スクリプト train.py を使用します。学習の挙動は設定ファイルで制御します。
 
-例1: 基本的な学習  
-configs/base\_config.yaml の設定で学習を開始します。  
-python train.py --config configs/base_config.yaml --data_path data/wikitext-103_train.jsonl
+**例1: 基本的な学習**
 
-例2: 分散学習 (GPUが2つの場合)  
-configs/base\_config.yaml の training.type を distributed に変更し、以下を実行します。  
-torchrun \--nproc\_per\_node=2 train.py \--config configs/base\_config.yaml
+\# configs/base\_config.yaml の設定で学習を開始します。  
+python train.py \--config configs/base\_config.yaml \--data\_path data/sample\_data.jsonl
 
-例3: 知識蒸留  
-configs/base\_config.yaml の training.type を distillation に変更し、以下を実行します。  
-torchrun \--nproc\_per\_node=2 train.py \--config configs/base\_config.yaml
+**例2: 知識蒸留 (GPUが2つ以上ある場合)**
+
+\# configs/base\_config.yaml の training.type を "distillation" に変更  
+torchrun \--nproc\_per\_node=2 train.py \--config configs/base\_config.yaml \--data\_path data/sample\_data.jsonl
 
 ### **ステップ4: 対話アプリケーションの起動**
 
-学習済みのモデルを使って、GradioベースのチャットUIを起動します。
+学習済みのモデルを使って、GradioベースのチャットUIを起動します。2種類のプロトタイプが利用可能です。
 
-python \-m app.main \--model\_path path/to/your\_model.pth
+#### **4.1. シンプルな対話AI**
+
+モデルの基本的な生成能力を試すための、シンプルなチャットUIです。
+
+python \-m app.main \--model\_path breakthrough\_snn\_model.pth
 
 ブラウザで http://0.0.0.0:7860 を開いてください。
+
+#### **4.2. LangChain連携AI (構造化応答)**
+
+モデルをLangChainフレームワークに統合し、プロンプトテンプレートを用いてより構造化された応答を生成するデモです。
+
+python \-m app.langchain\_main \--model\_path breakthrough\_snn\_model.pth
+
+ブラウザで http://0.0.0.0:7861 を開いてください。
 
 ### **ステップ5: ベンチマークによる性能評価**
 

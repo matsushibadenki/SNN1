@@ -10,9 +10,18 @@ import time
 from snn_research.deployment import SNNInferenceEngine
 
 class ChatService:
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     def __init__(self, snn_engine: SNNInferenceEngine, max_len: int):
+        """
+        ChatServiceを初期化します。
+
+        Args:
+            snn_engine: テキスト生成に使用するSNN推論エンジン。
+            max_len: 生成するテキストの最大長。
+        """
         self.snn_engine = snn_engine
         self.max_len = max_len
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     def handle_message(self, message: str, history: list) -> str:
         """

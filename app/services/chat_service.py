@@ -6,6 +6,7 @@
 # - Gradioからの入力を処理し、整形して推論エンジンに渡す。
 # - 推論結果をGradioが扱える形式で返す。
 # - ストリーミング応答をサポート。
+# - 推論完了後に総スパイク数をコンソールに出力。
 
 import time
 from snn_research.deployment import SNNInferenceEngine
@@ -23,7 +24,6 @@ class ChatService:
         self.snn_engine = snn_engine
         self.max_len = max_len
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     def handle_message(self, message: str, history: list) -> Iterator[str]:
         """
         GradioのChatInterfaceに渡すためのメインのチャット処理関数。
@@ -40,15 +40,18 @@ class ChatService:
         start_time = time.time()
         
         full_response = ""
-        # generateメソッドはジェネレータを返す
         for chunk in self.snn_engine.generate(prompt, max_len=self.max_len):
             full_response += chunk
-            yield full_response # Gradioのストリーミング表示のために、蓄積した応答をyieldする
+            yield full_response
 
         duration = time.time() - start_time
         response = full_response.strip()
 
+        stats = self.snn_engine.last_inference_stats
+        total_spikes = stats.get("total_spikes", 0)
+
         print(f"Generated response: {response}")
         print(f"Inference time: {duration:.4f} seconds")
+        print(f"Total spikes: {total_spikes:,.0f}")
         print("-" * 30)
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+

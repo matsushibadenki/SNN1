@@ -27,8 +27,10 @@ def main():
     if args.model_path:
         container.config.model.path.from_value(args.model_path)
 
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     # コンテナから完成品のChatServiceを取得
-    chat_service = container.chat_service(max_len=container.config.inference.max_len())
+    chat_service = container.chat_service()
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     print(f"Loading SNN model from: {container.config.model.path()}")
     print("✅ SNN model loaded successfully via DI Container.")

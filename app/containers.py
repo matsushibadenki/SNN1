@@ -108,12 +108,13 @@ class TrainingContainer(containers.DeclarativeContainer):
         grad_clip_norm=config.training.grad_clip_norm,
     )
 
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     distillation_trainer = providers.Factory(
         DistillationTrainer,
         criterion=distillation_loss,
-        teacher_model=teacher_model,
         grad_clip_norm=config.training.grad_clip_norm,
     )
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 
 class AppContainer(containers.DeclarativeContainer):
@@ -128,13 +129,11 @@ class AppContainer(containers.DeclarativeContainer):
     )
     
     # --- サービス ---
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     chat_service = providers.Factory(
         ChatService,
         snn_engine=snn_inference_engine,
         max_len=config.inference.max_len,
     )
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     # --- LangChainアダプタ ---
     langchain_adapter = providers.Factory(

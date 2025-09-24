@@ -48,7 +48,8 @@ python train.py \--config configs/base\_config.yaml \--data\_path data/sample\_d
 
 \# 1\. configs/base\_config.yaml の training.type を "distillation" に変更  
 \# 2\. 事前計算済みデータディレクトリを指定して学習を実行  
-torchrun \--nproc\_per\_node=2 train.py \\  
+\#    (スクリプトが自動でGPUを検出し、分散学習を開始します)  
+python train.py \\  
     \--config configs/base\_config.yaml \\  
     \--data\_path precomputed\_data/
 

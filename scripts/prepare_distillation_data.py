@@ -11,7 +11,7 @@ import os
 import argparse
 import json
 import torch
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from torch.utils.data import DataLoader, Dataset
 

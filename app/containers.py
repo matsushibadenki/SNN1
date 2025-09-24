@@ -20,11 +20,9 @@ from snn_research.training.trainers import BreakthroughTrainer, DistillationTrai
 from .services.chat_service import ChatService
 from .adapters.snn_langchain_adapter import SNNLangChainAdapter
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 def _calculate_t_max(epochs: int, warmup_epochs: int) -> int:
     """学習率スケジューラのT_maxを計算する"""
     return max(1, epochs - warmup_epochs) # 1未満にならないようにする
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 class TrainingContainer(containers.DeclarativeContainer):
     """学習に関連するオブジェクトの依存関係を管理するコンテナ。"""
@@ -62,7 +60,6 @@ class TrainingContainer(containers.DeclarativeContainer):
         total_iters=config.training.warmup_epochs,
     )
     
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     main_scheduler_t_max = providers.Factory(
         _calculate_t_max,
         epochs=config.training.epochs.as_(int),
@@ -74,7 +71,6 @@ class TrainingContainer(containers.DeclarativeContainer):
         optimizer=optimizer,
         T_max=main_scheduler_t_max,
     )
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     scheduler = providers.Factory(
         SequentialLR,
@@ -132,10 +128,13 @@ class AppContainer(containers.DeclarativeContainer):
     )
     
     # --- サービス ---
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     chat_service = providers.Factory(
         ChatService,
         snn_engine=snn_inference_engine,
+        max_len=config.inference.max_len,
     )
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     # --- LangChainアダプタ ---
     langchain_adapter = providers.Factory(

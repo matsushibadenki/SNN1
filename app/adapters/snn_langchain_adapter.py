@@ -19,7 +19,6 @@ class SNNLangChainAdapter(LLM):
     def _llm_type(self) -> str:
         return "snn_breakthrough"
 
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     def _call(
         self,
         prompt: str,
@@ -27,7 +26,6 @@ class SNNLangChainAdapter(LLM):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> str:
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         if stop is not None:
             pass # 将来的にstopシーケンスをサポート
         

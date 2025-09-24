@@ -5,6 +5,7 @@
 # - DIコンテナを初期化し、設定を読み込む。
 # - コンテナから完成品のChatServiceを取得してGradioに渡す。
 # - 共通UIビルダー関数を呼び出してUIを構築・起動する。
+# - --model_config 引数を追加し、ベース設定とモデル設定を分けて読み込めるようにした。
 
 import gradio as gr
 import argparse
@@ -20,11 +21,16 @@ from app.utils import build_gradio_ui
 def main():
     parser = argparse.ArgumentParser(description="SNNベース リアルタイム対話AI プロトタイプ")
     parser.add_argument("--config", type=str, default="configs/base_config.yaml", help="設定ファイルのパス")
+    parser.add_argument("--model_config", type=str, default="configs/models/small.yaml", help="モデルアーキテクチャ設定ファイルのパス")
     parser.add_argument("--model_path", type=str, help="モデルのパス (設定ファイルを上書き)")
     args = parser.parse_args()
 
     container = AppContainer()
+    # ベース設定とモデル設定を両方読み込む
     container.config.from_yaml(args.config)
+    container.config.from_yaml(args.model_config)
+
+    # コマンドラインからモデルパスが指定された場合は、設定を上書き
     if args.model_path:
         container.config.model.path.from_value(args.model_path)
 

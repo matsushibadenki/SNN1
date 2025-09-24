@@ -6,6 +6,7 @@
 # - 独自Vocabularyを廃止し、Hugging Face Tokenizerを使用するようにSNNInferenceEngineを修正。
 # - `generate` メソッドをストリーミング応答（ジェネレータ）に変更し、逐次的なテキスト生成を可能に。
 # - `stop_sequences` のサポートを追加。
+# - 推論時の総スパイク数を計測し、インスタンス変数 `last_inference_stats` に保存する機能を追加。
 
 import torch
 import torch.nn as nn
@@ -29,7 +30,6 @@ class SNNInferenceEngine:
         self.device = torch.device(device)
         checkpoint = torch.load(model_path, map_location=self.device)
         
-        # チェックポイントからTokenizer名を取得してロード
         tokenizer_name = checkpoint['tokenizer_name']
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         if self.tokenizer.pad_token is None:
@@ -40,21 +40,14 @@ class SNNInferenceEngine:
         self.model = BreakthroughSNN(vocab_size=self.tokenizer.vocab_size, **self.config).to(self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.eval()
-        
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        self.last_inference_stats: Dict[str, Any] = {}
+
     def generate(self, start_text: str, max_len: int, stop_sequences: Optional[List[str]] = None) -> Iterator[str]:
         """
         テキストをストリーミング形式で生成します。
-
-        Args:
-            start_text: 生成を開始するための初期テキスト。
-            max_len: 生成する最大トークン数。
-            stop_sequences: 生成を停止するトリガーとなる文字列のリスト。
-
-        Yields:
-            生成された新しいトークン文字列。
         """
-        # BOSトークンを先頭に付与
+        self.last_inference_stats = {"total_spikes": 0}
+
         bos_token = self.tokenizer.bos_token or ''
         prompt_ids = self.tokenizer.encode(f"{bos_token}{start_text}", return_tensors='pt').to(self.device)
         
@@ -63,7 +56,10 @@ class SNNInferenceEngine:
         
         with torch.no_grad():
             for _ in range(max_len):
-                logits, _ = self.model(input_tensor, return_spikes=False)
+                logits, hidden_states = self.model(input_tensor, return_spikes=True)
+                
+                self.last_inference_stats["total_spikes"] += hidden_states.sum().item()
+                
                 next_token_logits = logits[:, -1, :]
                 next_token_id_tensor = torch.argmax(next_token_logits, dim=-1)
                 next_token_id = next_token_id_tensor.item()
@@ -75,13 +71,11 @@ class SNNInferenceEngine:
                 generated_text += new_token
                 yield new_token
                 
-                # Stop sequenceのチェック
                 if stop_sequences:
                     if any(stop_seq in generated_text for stop_seq in stop_sequences):
                         break
                     
                 input_tensor = torch.cat([input_tensor, next_token_id_tensor.unsqueeze(0)], dim=1)
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 
 # --- ニューロモーフィック デプロイメント機能 ---
@@ -157,3 +151,4 @@ class NeuromorphicDeploymentManager:
             'continual_learner': ContinualLearningEngine(optimized_model)
         }
         print(f"✅ デプロイメント完了: {name}")
+

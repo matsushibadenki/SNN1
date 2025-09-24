@@ -7,10 +7,11 @@
 # - 推論結果をGradioが扱える形式で返す。
 # - ストリーミング応答をサポート。
 # - 推論完了後に総スパイク数をコンソールに出力。
+# - UI表示用に、リアルタイムの統計情報も生成する。
 
 import time
 from snn_research.deployment import SNNInferenceEngine
-from typing import Iterator
+from typing import Iterator, Tuple, List
 
 class ChatService:
     def __init__(self, snn_engine: SNNInferenceEngine, max_len: int):
@@ -24,14 +25,16 @@ class ChatService:
         self.snn_engine = snn_engine
         self.max_len = max_len
 
-    def handle_message(self, message: str, history: list) -> Iterator[str]:
+    def stream_response(self, message: str, history: List[List[str]]) -> Iterator[Tuple[List[List[str]], str]]:
         """
-        GradioのChatInterfaceに渡すためのメインのチャット処理関数。
-        ストリーミング応答をサポートします。
+        GradioのBlocks UIのために、チャット履歴と統計情報をストリーミング生成する。
         """
+        history.append([message, ""])
+        
         prompt = ""
-        for user_msg, bot_msg in history:
-            prompt += f"User: {user_msg}\nAssistant: {bot_msg}\n"
+        for user_msg, bot_msg in history[:-1]:
+            if bot_msg is not None:
+                prompt += f"User: {user_msg}\nAssistant: {bot_msg}\n"
         prompt += f"User: {message}\nAssistant:"
 
         print("-" * 30)
@@ -40,17 +43,33 @@ class ChatService:
         start_time = time.time()
         
         full_response = ""
+        token_count = 0
         for chunk in self.snn_engine.generate(prompt, max_len=self.max_len):
             full_response += chunk
-            yield full_response
+            token_count += 1
+            history[-1][1] = full_response
+            
+            duration = time.time() - start_time
+            stats = self.snn_engine.last_inference_stats
+            total_spikes = stats.get("total_spikes", 0)
+            spikes_per_second = total_spikes / duration if duration > 0 else 0
+            tokens_per_second = token_count / duration if duration > 0 else 0
 
+            stats_md = f"""
+            **Inference Time:** `{duration:.2f} s`
+            **Tokens/Second:** `{tokens_per_second:.2f}`
+            ---
+            **Total Spikes:** `{total_spikes:,.0f}`
+            **Spikes/Second:** `{spikes_per_second:,.0f}`
+            """
+            
+            yield history, stats_md
+
+        # Final log to console
         duration = time.time() - start_time
-        response = full_response.strip()
-
         stats = self.snn_engine.last_inference_stats
         total_spikes = stats.get("total_spikes", 0)
-
-        print(f"Generated response: {response}")
+        print(f"\nGenerated response: {full_response.strip()}")
         print(f"Inference time: {duration:.4f} seconds")
         print(f"Total spikes: {total_spikes:,.0f}")
         print("-" * 30)

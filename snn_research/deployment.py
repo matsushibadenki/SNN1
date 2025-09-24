@@ -4,13 +4,15 @@
 # 変更点:
 # - mypyエラー解消のため、型ヒントを追加。
 # - 独自Vocabularyを廃止し、Hugging Face Tokenizerを使用するようにSNNInferenceEngineを修正。
+# - `generate` メソッドをストリーミング応答（ジェネレータ）に変更し、逐次的なテキスト生成を可能に。
+# - `stop_sequences` のサポートを追加。
 
 import torch
 import torch.nn as nn
 import os
 import copy
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Iterator
 from enum import Enum
 from dataclasses import dataclass
 from transformers import AutoTokenizer
@@ -39,28 +41,47 @@ class SNNInferenceEngine:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.eval()
         
-    def generate(self, start_text: str, max_len: int) -> str:
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    def generate(self, start_text: str, max_len: int, stop_sequences: Optional[List[str]] = None) -> Iterator[str]:
+        """
+        テキストをストリーミング形式で生成します。
+
+        Args:
+            start_text: 生成を開始するための初期テキスト。
+            max_len: 生成する最大トークン数。
+            stop_sequences: 生成を停止するトリガーとなる文字列のリスト。
+
+        Yields:
+            生成された新しいトークン文字列。
+        """
         # BOSトークンを先頭に付与
         bos_token = self.tokenizer.bos_token or ''
-        input_ids = self.tokenizer.encode(f"{bos_token}{start_text}", return_tensors='pt').to(self.device)
+        prompt_ids = self.tokenizer.encode(f"{bos_token}{start_text}", return_tensors='pt').to(self.device)
         
-        # SNNモデルにはgenerateメソッドがないため、手動ループで実装
-        generated_ids = input_ids[0].tolist()
-        input_tensor = input_ids
+        input_tensor = prompt_ids
+        generated_text = ""
         
         with torch.no_grad():
             for _ in range(max_len):
                 logits, _ = self.model(input_tensor, return_spikes=False)
                 next_token_logits = logits[:, -1, :]
-                next_token_id = int(torch.argmax(next_token_logits, dim=-1).item())
+                next_token_id_tensor = torch.argmax(next_token_logits, dim=-1)
+                next_token_id = next_token_id_tensor.item()
                 
                 if next_token_id == self.tokenizer.eos_token_id:
                     break
+
+                new_token = self.tokenizer.decode([next_token_id])
+                generated_text += new_token
+                yield new_token
+                
+                # Stop sequenceのチェック
+                if stop_sequences:
+                    if any(stop_seq in generated_text for stop_seq in stop_sequences):
+                        break
                     
-                generated_ids.append(next_token_id)
-                input_tensor = torch.cat([input_tensor, torch.tensor([[next_token_id]], device=self.device)], dim=1)
-        
-        return self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+                input_tensor = torch.cat([input_tensor, next_token_id_tensor.unsqueeze(0)], dim=1)
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 
 # --- ニューロモーフィック デプロイメント機能 ---

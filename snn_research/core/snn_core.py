@@ -2,9 +2,11 @@
 # SNNモデルの定義、次世代ニューロンなど、中核となるロジックを集約したライブラリ
 #
 # 変更点:
-# - ロードマップ フェーズ2「2.3. アーキテクチャの進化」に対応。
-# - SpikingTemporalAttention モジュールを新規実装。
-# - BreakthroughSNN に SpikingTemporalAttention を統合し、SSM層の出力を処理するように変更。
+# - ロードマップ フェーズ2「2.3. アーキテクチャの進化」をさらに推進。
+# - SSMの状態遷移計算にアテンション機構を統合した AttentionalSpikingSSMLayer を新規実装。
+#   これにより、入力スパイクの中から現在の状態にとって重要な情報を動的に選択することが可能になる。
+# - BreakthroughSNN を AttentionalSpikingSSMLayer を使用するように更新。
+#   - 各SSM層内でアテンションが適用されるため、最終層の SpikingTemporalAttention は削除。
 # - mypyエラー解消のため、型ヒントを全体的に追加・修正。
 # - spikingjellyとtqdmのimportに # type: ignore を追加。
 
@@ -172,67 +174,97 @@ class EventDrivenSSMLayer(nn.Module):
         self.h_state, self.state_v_mem, self.output_v_mem = h.detach(), state_v.detach(), output_v.detach()
         return torch.stack(outputs, dim=1)
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-class SpikingTemporalAttention(nn.Module):
+class AttentionalSpikingSSMLayer(nn.Module):
     """
-    スパイク列の時間的関係性に注意を向けるアテンション機構。
-    各タイムステップの重要度を動的に計算する。
+    SSMの状態遷移にアテンション機構を統合したEvent-driven Spiking State Space Model。
+    入力スパイクから、現在の状態にとって重要な情報を動的に選択して状態を更新する。
     """
-    def __init__(self, d_model: int, n_head: int = 4):
+    h_state: torch.Tensor
+    state_v_mem: torch.Tensor
+    output_v_mem: torch.Tensor
+
+    def __init__(self, d_model: int, d_state: int = 64, n_head: int = 4, dt: float = 0.1):
         super().__init__()
         self.d_model = d_model
+        self.d_state = d_state
         self.n_head = n_head
-        self.d_head = d_model // n_head
-        assert self.d_head * n_head == self.d_model, "d_model must be divisible by n_head"
+        self.d_head = d_state // n_head
+        assert self.d_head * n_head == self.d_state, "d_state must be divisible by n_head"
 
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
-        self.out_proj = nn.Linear(d_model, d_model)
+        # SSM パラメータ
+        self.A = nn.Parameter(torch.randn(d_state, d_state))
+        self.C = nn.Parameter(torch.randn(d_model, d_state))
+        self.D = nn.Parameter(torch.randn(d_model, d_model))
+
+        # アテンション用線形層
+        self.q_proj = nn.Linear(d_state, d_state) # Q from h_state
+        self.k_proj = nn.Linear(d_model, d_state) # K from x_t
+        self.v_proj = nn.Linear(d_model, d_state) # V from x_t (これが状態遷移行列Bの代わりになる)
+        
+        self.out_proj = nn.Linear(d_state, d_state) # アテンション結果を状態空間に戻す
+
+        # ニューロン
+        self.state_lif = AdaptiveLIFNeuron(d_state)
+        self.output_lif = AdaptiveLIFNeuron(d_model)
+
+        # 状態バッファ
+        self.register_buffer('h_state', torch.zeros(1, 1, d_state))
+        self.register_buffer('state_v_mem', torch.zeros(1, 1, d_state))
+        self.register_buffer('output_v_mem', torch.zeros(1, 1, d_model))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x (torch.Tensor): 入力スパイク列 (batch_size, time_steps, seq_len, d_model)
-        
-        Returns:
-            torch.Tensor: アテンション適用後のスパイク列 (batch_size, time_steps, seq_len, d_model)
-        """
         batch_size, time_steps, seq_len, _ = x.shape
         
-        # (batch_size, seq_len, time_steps, d_model) に並び替えて時間軸にアテンションを適用
-        x_permuted = x.permute(0, 2, 1, 3).contiguous()
-        x_reshaped = x_permuted.view(batch_size * seq_len, time_steps, self.d_model)
+        # 状態変数の初期化とデバイス移動
+        h = self.h_state.clone().expand(batch_size, seq_len, -1).detach()
+        state_v = self.state_v_mem.clone().expand(batch_size, seq_len, -1).detach()
+        output_v = self.output_v_mem.clone().expand(batch_size, seq_len, -1).detach()
 
-        q = self.q_proj(x_reshaped)
-        k = self.k_proj(x_reshaped)
-        v = self.v_proj(x_reshaped)
+        outputs = []
+        for t in range(time_steps):
+            x_t = x[:, t, :, :]
+            
+            # 状態遷移 (A*h_t-1)
+            state_transition = F.linear(h, self.A)
+            
+            # イベント駆動: スパイクがある場合のみアテンションと状態更新を計算
+            if torch.any(x_t > 0):
+                q = self.q_proj(h).view(batch_size * seq_len, self.n_head, self.d_head)
+                k = self.k_proj(x_t).view(batch_size * seq_len, self.n_head, self.d_head)
+                v = self.v_proj(x_t).view(batch_size * seq_len, self.n_head, self.d_head)
 
-        # Multi-headに分割
-        q = q.view(batch_size * seq_len, time_steps, self.n_head, self.d_head).transpose(1, 2)
-        k = k.view(batch_size * seq_len, time_steps, self.n_head, self.d_head).transpose(1, 2)
-        v = v.view(batch_size * seq_len, time_steps, self.n_head, self.d_head).transpose(1, 2)
-
-        # Scaled Dot-Product Attention
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_head)
-        attn_weights = F.softmax(attn_scores, dim=-1)
+                attn_scores = torch.matmul(q.transpose(0,1), k.transpose(0,1).transpose(-2, -1)) / math.sqrt(self.d_head)
+                attn_weights = F.softmax(attn_scores, dim=-1)
+                
+                attended_v = torch.matmul(attn_weights, v.transpose(0,1)).transpose(0,1)
+                attended_v = attended_v.contiguous().view(batch_size, seq_len, self.d_state)
+                
+                gated_input = self.out_proj(attended_v)
+                
+                # 状態更新 (A*h_t-1 + Attention(h_t-1, x_t))
+                state_update = state_transition + gated_input
+                h, state_v = self.state_lif(state_update, state_v)
+                
+                # 出力計算 (C*h_t + D*x_t)
+                output_projection = F.linear(h, self.C)
+                output_update = output_projection + F.linear(x_t, self.D)
+                out_spike, output_v = self.output_lif(output_update, output_v)
+            else:
+                # スパイクがない場合は状態遷移のみ
+                h, state_v = self.state_lif(state_transition, state_v)
+                out_spike = torch.zeros_like(x_t)
+            
+            outputs.append(out_spike)
+            
+        # 次のフォワードパスのために状態を保存
+        self.h_state, self.state_v_mem, self.output_v_mem = h.detach(), state_v.detach(), output_v.detach()
         
-        attended_v = torch.matmul(attn_weights, v)
+        return torch.stack(outputs, dim=1)
 
-        # ヘッドを結合して元の形状に戻す
-        attended_v = attended_v.transpose(1, 2).contiguous().view(batch_size * seq_len, time_steps, self.d_model)
-        
-        output = self.out_proj(attended_v)
-        output = output.view(batch_size, seq_len, time_steps, self.d_model).permute(0, 2, 1, 3)
-
-        # 残差接続
-        output = x + output
-        
-        return output
 
 class BreakthroughSNN(nn.Module):
     """
-    EventDriven-SSMと時間的アテンションを統合した、次世代のSNNアーキテクチャ。
+    AttentionalSpikingSSMLayerを統合した、次世代のSNNアーキテクチャ。
     """
     def __init__(self, vocab_size: int, d_model: int, d_state: int, num_layers: int, time_steps: int, n_head: int):
         super().__init__()
@@ -241,9 +273,11 @@ class BreakthroughSNN(nn.Module):
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.spike_encoder = TTFSEncoder(d_model=d_model, time_steps=time_steps)
         
-        self.ssm_layers = nn.ModuleList([EventDrivenSSMLayer(d_model, d_state) for _ in range(num_layers)])
-        
-        self.temporal_attention = SpikingTemporalAttention(d_model=d_model, n_head=n_head)
+        # 新しいアテンション付きSSMレイヤーを使用
+        self.ssm_layers = nn.ModuleList([
+            AttentionalSpikingSSMLayer(d_model=d_model, d_state=d_state, n_head=n_head) 
+            for _ in range(num_layers)
+        ])
         
         self.output_projection = nn.Linear(d_model, vocab_size)
 
@@ -255,9 +289,6 @@ class BreakthroughSNN(nn.Module):
         for layer in self.ssm_layers:
             hidden_states = layer(hidden_states)
             
-        # SSM層の後に時間的アテンションを適用
-        hidden_states = self.temporal_attention(hidden_states)
-        
         # 時間方向にスパイクを積分 (平均化)
         time_integrated = hidden_states.mean(dim=1)
         logits = self.output_projection(time_integrated)
@@ -268,4 +299,3 @@ class BreakthroughSNN(nn.Module):
         if return_spikes:
             return logits, hidden_states
         return logits, torch.empty(0) # スパイクを返さない場合
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️

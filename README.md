@@ -1,4 +1,4 @@
-# **SNNベース AIチャットシステム (v2.2 \- 高速知識蒸留パイプライン実装)**
+# **SNNベース AIチャットシステム (v2.3 \- 設定ファイルモジュール化)**
 
 ## **1\. 概要**
 
@@ -8,7 +8,7 @@
 
 * **関心の分離:** snn\_research（SNNコア技術の研究開発）と app（モデルを利用するアプリケーション）を明確に分離。  
 * **依存性の注入 (DI):** dependency-injector を用い、クラス間の依存関係を外部コンテナで管理することで、疎結合でテスト容易性の高い設計を実現。  
-* **設定の外部化:** モデルの構造や学習パラメータを configs/ ディレクトリのYAMLファイルで管理し、コードの変更なしに実験条件を変更可能に。
+* **設定のモジュール化:** 学習設定（configs/base\_config.yaml）とモデルアーキテクチャ設定（configs/models/\*.yaml）を分離し、実験の組み合わせを容易に。
 
 ## **2\. 使い方 (How to Use)**
 
@@ -30,34 +30,42 @@ python \-m scripts.data\_preparation
 
 知識蒸留を行う前に、教師モデルのロジットを事前計算する必要があります。
 
-\# 例: sample\_data.jsonl から蒸留用データを作成し、 precomputed\_data/ ディレクトリに保存  
+\# 例: sample\_data.jsonl から蒸留用データを作成  
 python \-m scripts.prepare\_distillation\_data \\  
     \--input\_file data/sample\_data.jsonl \\  
     \--output\_dir precomputed\_data/
 
 ### **ステップ3: モデルの学習**
 
-新しい統合学習スクリプト train.py を使用します。学習の挙動は設定ファイルで制御します。
+統合学習スクリプト train.py を使用します。--configでベース設定を、--model\_configでモデルのアーキテクチャを指定します。
 
-**例1: 基本的な学習**
+**例1: 基本的な学習（smallモデル）**
 
-\# configs/base\_config.yaml の設定で学習を開始します。  
-python train.py \--config configs/base\_config.yaml \--data\_path data/sample\_data.jsonl
+\# smallモデルのアーキテクチャで学習を開始します。  
+python train.py \\  
+    \--config configs/base\_config.yaml \\  
+    \--model\_config configs/models/small.yaml \\  
+    \--data\_path data/sample\_data.jsonl
 
-**例2: 知識蒸留 (GPUが2つ以上ある場合)**
+**例2: 知識蒸留（mediumモデル, GPUが2つ以上ある場合）**
 
 \# 1\. configs/base\_config.yaml の training.type を "distillation" に変更  
-\# 2\. 事前計算済みデータディレクトリを指定して学習を実行  
+\# 2\. mediumモデルのアーキテクチャで知識蒸留を実行  
 \#    (スクリプトが自動でGPUを検出し、分散学習を開始します)  
 python train.py \\  
     \--config configs/base\_config.yaml \\  
+    \--model\_config configs/models/medium.yaml \\  
     \--data\_path precomputed\_data/
 
 ### **ステップ4: 対話アプリケーションの起動**
 
-学習済みのモデルを使って、GradioベースのチャットUIを起動します。
+学習済みのモデルを使って、GradioベースのチャットUIを起動します。**学習時に使用したモデル設定ファイルを指定してください。**
 
-python \-m app.main \--model\_path breakthrough\_snn\_model.pth
+**例: mediumモデルを起動**
+
+python \-m app.main \\  
+    \--config configs/base\_config.yaml \\  
+    \--model\_config configs/models/medium.yaml
 
 http://0.0.0.0:7860 を開いてください。
 

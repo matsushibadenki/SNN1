@@ -5,12 +5,13 @@
 # - DIコンテナから推論エンジンを受け取る。
 # - Gradioからの入力を処理し、整形して推論エンジンに渡す。
 # - 推論結果をGradioが扱える形式で返す。
+# - ストリーミング応答をサポート。
 
 import time
 from snn_research.deployment import SNNInferenceEngine
+from typing import Iterator
 
 class ChatService:
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     def __init__(self, snn_engine: SNNInferenceEngine, max_len: int):
         """
         ChatServiceを初期化します。
@@ -21,11 +22,12 @@ class ChatService:
         """
         self.snn_engine = snn_engine
         self.max_len = max_len
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
-    def handle_message(self, message: str, history: list) -> str:
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    def handle_message(self, message: str, history: list) -> Iterator[str]:
         """
         GradioのChatInterfaceに渡すためのメインのチャット処理関数。
+        ストリーミング応答をサポートします。
         """
         prompt = ""
         for user_msg, bot_msg in history:
@@ -36,13 +38,17 @@ class ChatService:
         print(f"Input prompt to SNN:\n{prompt}")
 
         start_time = time.time()
-        generated_text = self.snn_engine.generate(prompt, max_len=self.max_len)
-        duration = time.time() - start_time
         
-        response = generated_text.replace(prompt, "").strip()
+        full_response = ""
+        # generateメソッドはジェネレータを返す
+        for chunk in self.snn_engine.generate(prompt, max_len=self.max_len):
+            full_response += chunk
+            yield full_response # Gradioのストリーミング表示のために、蓄積した応答をyieldする
+
+        duration = time.time() - start_time
+        response = full_response.strip()
 
         print(f"Generated response: {response}")
         print(f"Inference time: {duration:.4f} seconds")
         print("-" * 30)
-        
-        return response
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️

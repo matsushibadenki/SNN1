@@ -5,6 +5,7 @@
 # - 蒸留学習時に、事前計算されたロジットを読み込む `DistillationDataset` を使用するように変更。
 # - 蒸留用のcollate_fnを、事前計算ロジットをバッチ処理するように更新。
 # - データパスの指定を、蒸留データセットのディレクトリ構造に合わせて修正。
+# - --model_config 引数を追加し、ベース設定とモデル設定を分けて読み込めるようにした。
 
 import os
 import argparse
@@ -31,7 +32,6 @@ def set_seed(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 def standard_collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]], pad_id: int):
     inputs, targets = zip(*batch)
     padded_inputs = pad_sequence(list(inputs), batch_first=True, padding_value=pad_id)
@@ -46,7 +46,6 @@ def distillation_collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor, torch.
     padded_teacher_logits = pad_sequence(list(teacher_logits), batch_first=True, padding_value=0.0) # ロジットは0でパディング
     
     return padded_inputs, padded_targets, padded_teacher_logits
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 def main_worker(rank, world_size, container, args):
     is_distributed = container.config.training.type() != "standard"
@@ -135,12 +134,16 @@ def main_worker(rank, world_size, container, args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SNNモデルの統合学習スクリプト")
     parser.add_argument("--config", type=str, default="configs/base_config.yaml", help="設定ファイルのパス")
+    parser.add_argument("--model_config", type=str, default="configs/models/small.yaml", help="モデルアーキテクチャ設定ファイルのパス")
     parser.add_argument("--data_path", type=str, help="データセットのパス (設定ファイルを上書き)")
     parser.add_argument("--data_format", type=str, choices=[f.value for f in DataFormat], help="データ形式 (設定ファイルを上書き)")
     args = parser.parse_args()
 
     container = TrainingContainer()
+    # ベース設定とモデル設定を両方読み込む
     container.config.from_yaml(args.config)
+    container.config.from_yaml(args.model_config)
+
     if args.data_path: container.config.data.path.from_value(args.data_path)
     if args.data_format: container.config.data.format.from_value(args.data_format)
     

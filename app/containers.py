@@ -56,11 +56,13 @@ class TrainingContainer(containers.DeclarativeContainer):
         total_iters=config.training.warmup_epochs,
     )
     
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     main_scheduler = providers.Factory(
         CosineAnnealingLR,
         optimizer=optimizer,
-        T_max=config.training.epochs - config.training.warmup_epochs,
+        T_max=config.training.epochs.as_(int) - config.training.warmup_epochs.as_(int),
     )
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     scheduler = providers.Factory(
         SequentialLR,

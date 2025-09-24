@@ -29,9 +29,7 @@ training:
   learning_rate: 0.0005
   use_scheduler: true
   grad_clip_norm: 1.0
-  # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-  warmup_epochs: 1 # 学習を安定させるためのウォームアップエポック数を追加
-  # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+  warmup_epochs: 1
 
   # 損失関数の重み
   loss:

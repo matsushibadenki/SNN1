@@ -31,20 +31,22 @@ def set_seed(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 def standard_collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]], pad_id: int):
     inputs, targets = zip(*batch)
-    padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=pad_id)
-    padded_targets = pad_sequence(targets, batch_first=True, padding_value=pad_id)
+    padded_inputs = pad_sequence(list(inputs), batch_first=True, padding_value=pad_id)
+    padded_targets = pad_sequence(list(targets), batch_first=True, padding_value=pad_id)
     return padded_inputs, padded_targets
 
 def distillation_collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]], pad_id: int):
     inputs, targets, teacher_logits = zip(*batch)
     
-    padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=pad_id)
-    padded_targets = pad_sequence(targets, batch_first=True, padding_value=pad_id)
-    padded_teacher_logits = pad_sequence(teacher_logits, batch_first=True, padding_value=0.0) # ロジットは0でパディング
+    padded_inputs = pad_sequence(list(inputs), batch_first=True, padding_value=pad_id)
+    padded_targets = pad_sequence(list(targets), batch_first=True, padding_value=pad_id)
+    padded_teacher_logits = pad_sequence(list(teacher_logits), batch_first=True, padding_value=0.0) # ロジットは0でパディング
     
     return padded_inputs, padded_targets, padded_teacher_logits
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 def main_worker(rank, world_size, container, args):
     is_distributed = container.config.training.type() != "standard"
@@ -152,4 +154,3 @@ if __name__ == "__main__":
     else:
         print(f"単一デバイスで '{training_type}' 学習を開始します。")
         main_worker(-1, 1, container, args)
-

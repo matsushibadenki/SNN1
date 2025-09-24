@@ -5,6 +5,7 @@
 # - DIコンテナを初期化し、設定を読み込む。
 # - コンテナから完成品のChatServiceを取得してGradioに渡す。
 # - Gradio Blocksを使用して、チャット画面とリアルタイム統計情報パネルを持つUIを構築。
+# - 会話履歴をクリアする機能を追加。
 
 import gradio as gr
 import argparse
@@ -61,29 +62,37 @@ def main():
                 show_label=False,
                 placeholder="SNNモデルに話しかける...",
                 container=False,
-                scale=7,
+                scale=6,
             )
             submit_btn = gr.Button("Send", variant="primary", scale=1)
+            clear_btn = gr.Button("Clear", scale=1)
 
         def clear_all():
-            return [], None, initial_stats_md
+            """チャット履歴、テキストボックス、統計表示をクリアする"""
+            return [], "", initial_stats_md
 
         # `submit` アクションの定義
-        submit_btn.click(
+        submit_event = msg_textbox.submit(
             fn=chat_service.stream_response,
             inputs=[msg_textbox, chatbot],
             outputs=[chatbot, stats_display]
         )
-        # テキストボックスをクリアするアクションを追加
-        submit_btn.click(fn=lambda: "", inputs=None, outputs=msg_textbox)
+        submit_event.then(fn=lambda: "", inputs=None, outputs=msg_textbox)
+        
+        button_submit_event = submit_btn.click(
+            fn=chat_service.stream_response,
+            inputs=[msg_textbox, chatbot],
+            outputs=[chatbot, stats_display]
+        )
+        button_submit_event.then(fn=lambda: "", inputs=None, outputs=msg_textbox)
 
-        # Enterキーでの送信
-        msg_textbox.submit(
-            fn=chat_service.stream_response,
-            inputs=[msg_textbox, chatbot],
-            outputs=[chatbot, stats_display]
+        # `clear` アクションの定義
+        clear_btn.click(
+            fn=clear_all,
+            inputs=None,
+            outputs=[chatbot, msg_textbox, stats_display],
+            queue=False # このアクションはキューに入れる必要がない
         )
-        msg_textbox.submit(fn=lambda: "", inputs=None, outputs=msg_textbox)
 
     # Webアプリケーションの起動
     print("\nStarting Gradio web server...")
@@ -95,3 +104,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

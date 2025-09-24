@@ -4,7 +4,7 @@
 # 機能:
 # - ロードマップ フェーズ2「2.4. プロトタイプ開発」に対応。
 # - DIコンテナからSNNLangChainAdapterを取得。
-# - LangChainのPromptTemplateとLLMChainを利用して、より構造化された応答を生成するデモ。
+# - LangChain Expression Language (LCEL) を使用して、モダンなチェインを構築。
 # - 共通UIビルダー関数を呼び出してUIを構築・起動する。
 # - --model_config 引数を追加し、ベース設定とモデル設定を分けて読み込めるようにした。
 
@@ -13,9 +13,9 @@ import argparse
 import sys
 import time
 from pathlib import Path
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
-from typing import Iterator, Tuple, List
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from typing import Iterator, Tuple, List, Dict
 
 # プロジェクトルートをPythonパスに追加
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -44,33 +44,28 @@ def main():
     print(f"Loading SNN model from: {container.config.model.path()}")
     print("✅ SNN model loaded and wrapped for LangChain successfully.")
 
-    # LangChainのプロンプトテンプレートを定義
-    template = """
-    あなたは、簡潔で役立つアシスタントです。ユーザーからの質問に日本語で答えてください。
-
-    質問: {question}
-    回答:
-    """
-    prompt = PromptTemplate(template=template, input_variables=["question"])
-
-    # LLMChainを作成
-    llm_chain = LLMChain(prompt=prompt, llm=snn_llm)
+    # LangChain Expression Language (LCEL) を使用してチェインを構築
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "あなたは、簡潔で役立つアシスタントです。ユーザーからの質問に日本語で答えてください。"),
+        ("user", "{question}")
+    ])
+    output_parser = StrOutputParser()
+    chain = prompt | snn_llm | output_parser
 
     def stream_response(message: str, history: List[List[str]]) -> Iterator[Tuple[List[List[str]], str]]:
         """GradioのBlocks UIのために、チャット履歴と統計情報をストリーミング生成する。"""
         history.append([message, ""])
         
         print("-" * 30)
-        print(f"Input question to LLMChain: {message}")
+        print(f"Input question to LCEL Chain: {message}")
         
         start_time = time.time()
         full_response = ""
         token_count = 0
         
-        # LangChainのstreamメソッドを使用
-        for chunk in llm_chain.stream({"question": message}):
-            response_piece = chunk.get('text', '')
-            full_response += response_piece
+        # LCELチェインのstreamメソッドを使用
+        for chunk in chain.stream({"question": message}):
+            full_response += chunk
             token_count += 1
             history[-1][1] = full_response
             
@@ -101,9 +96,9 @@ def main():
     # 共通UIビルダーを使用してUIを構築
     demo = build_gradio_ui(
         stream_fn=stream_response,
-        title="🤖 SNN + LangChain Prototype",
+        title="🤖 SNN + LangChain Prototype (LCEL)",
         description="""
-        SNNモデルをLangChain経由で利用するプロトタイプ。
+        SNNモデルをLangChain Expression Language (LCEL)経由で利用するプロトタイプ。
         右側のパネルには、推論時間や総スパイク数などの統計情報がリアルタイムで表示されます。
         """,
         chatbot_label="SNN+LangChain Chat",
@@ -116,7 +111,7 @@ def main():
     print(f"Please open http://{container.config.app.server_name()}:{server_port} in your browser.")
     demo.launch(
         server_name=container.config.app.server_name(),
-        server_port=server_port,
+        server_port=container.config.app.server_port(),
     )
 
 if __name__ == "__main__":

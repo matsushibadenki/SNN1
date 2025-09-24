@@ -5,6 +5,7 @@
 # - ロードマップ フェーズ2「2.4. プロトタイプ開発」に対応。
 # - DIコンテナからSNNLangChainAdapterを取得。
 # - LangChainのPromptTemplateとLLMChainを利用して、より構造化された応答を生成するデモ。
+# - ストリーミング応答に対応。
 
 import gradio as gr
 import argparse
@@ -12,6 +13,7 @@ import sys
 from pathlib import Path
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
+from typing import Iterator
 
 # プロジェクトルートをPythonパスに追加
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -47,26 +49,28 @@ def main():
     # LLMChainを作成
     llm_chain = LLMChain(prompt=prompt, llm=snn_llm)
 
-    def handle_message(message: str, history: list):
-        """Gradioからの入力を処理し、LLMChainを実行して応答を返す"""
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    def handle_message(message: str, history: list) -> Iterator[str]:
+        """Gradioからの入力を処理し、LLMChainをストリーミング実行して応答を返す"""
         print("-" * 30)
         print(f"Input question to LLMChain: {message}")
         
-        # LangChainを実行
-        response = llm_chain.invoke({"question": message})
-        
-        # responseは辞書形式なので、テキスト部分を取り出す
-        answer = response.get('text', '申し訳ありません、応答を生成できませんでした。').strip()
+        full_response = ""
+        # LangChainのstreamメソッドを使用
+        for chunk in llm_chain.stream({"question": message}):
+            # streamは辞書を返すので、'text'キーの値を取得
+            text_chunk = chunk.get('text', '')
+            full_response += text_chunk
+            yield full_response
 
-        print(f"Generated answer: {answer}")
+        print(f"Generated answer: {full_response.strip()}")
         print("-" * 30)
-        
-        return answer
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     # Gradioインターフェースの構築
     chatbot_interface = gr.ChatInterface(
         fn=handle_message,
-        title="🤖 SNN + LangChain Prototype",
+        title="🤖 SNN + LangChain Prototype (Streaming)",
         description="SNNモデルをLangChain経由で利用するプロトタイプ。質問を入力してください。",
         chatbot=gr.Chatbot(height=500),
         textbox=gr.Textbox(placeholder="質問を入力...", container=False, scale=7),

@@ -5,7 +5,7 @@
 # - mypyエラー解消のため、型ヒントを追加。
 # - 独自Vocabularyを廃止し、Hugging Face Tokenizerを使用するようにSNNInferenceEngineを修正。
 # - `generate` メソッドをストリーミング応答（ジェネレータ）に変更し、逐次的なテキスト生成を可能に。
-# - `stop_sequences` のサポートを追加。
+# - `stop_sequences` のロジックを改善し、生成テキスト全体に含まれるかをチェックするようにした。
 # - 推論時の総スパイク数を計測し、インスタンス変数 `last_inference_stats` に保存する機能を追加。
 
 import torch
@@ -58,7 +58,8 @@ class SNNInferenceEngine:
             for _ in range(max_len):
                 logits, hidden_states = self.model(input_tensor, return_spikes=True)
                 
-                self.last_inference_stats["total_spikes"] += hidden_states.sum().item()
+                if hidden_states.numel() > 0:
+                    self.last_inference_stats["total_spikes"] += hidden_states.sum().item()
                 
                 next_token_logits = logits[:, -1, :]
                 next_token_id_tensor = torch.argmax(next_token_logits, dim=-1)
@@ -72,6 +73,7 @@ class SNNInferenceEngine:
                 yield new_token
                 
                 if stop_sequences:
+                    # 生成されたテキスト全体に停止シーケンスが含まれているかチェック
                     if any(stop_seq in generated_text for stop_seq in stop_sequences):
                         break
                     

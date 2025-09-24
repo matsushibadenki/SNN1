@@ -20,6 +20,12 @@ from snn_research.training.trainers import BreakthroughTrainer, DistillationTrai
 from .services.chat_service import ChatService
 from .adapters.snn_langchain_adapter import SNNLangChainAdapter
 
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+def _calculate_t_max(epochs: int, warmup_epochs: int) -> int:
+    """学習率スケジューラのT_maxを計算する"""
+    return max(1, epochs - warmup_epochs) # 1未満にならないようにする
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+
 class TrainingContainer(containers.DeclarativeContainer):
     """学習に関連するオブジェクトの依存関係を管理するコンテナ。"""
     config = providers.Configuration()
@@ -57,10 +63,16 @@ class TrainingContainer(containers.DeclarativeContainer):
     )
     
 # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    main_scheduler_t_max = providers.Factory(
+        _calculate_t_max,
+        epochs=config.training.epochs.as_(int),
+        warmup_epochs=config.training.warmup_epochs.as_(int),
+    )
+
     main_scheduler = providers.Factory(
         CosineAnnealingLR,
         optimizer=optimizer,
-        T_max=config.training.epochs.as_(int) - config.training.warmup_epochs.as_(int),
+        T_max=main_scheduler_t_max,
     )
 # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 

@@ -4,6 +4,7 @@
 # 機能:
 # - DIコンテナを初期化し、設定を読み込む。
 # - コンテナから完成品のChatServiceを取得してGradioに渡す。
+# - Gradio Blocksを使用して、チャット画面とリアルタイム統計情報パネルを持つUIを構築。
 
 import gradio as gr
 import argparse
@@ -21,36 +22,73 @@ def main():
     parser.add_argument("--model_path", type=str, help="モデルのパス (設定ファイルを上書き)")
     args = parser.parse_args()
 
-    # DIコンテナを初期化し、設定ファイルを読み込む
     container = AppContainer()
     container.config.from_yaml(args.config)
     if args.model_path:
         container.config.model.path.from_value(args.model_path)
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-    # コンテナから完成品のChatServiceを取得
     chat_service = container.chat_service()
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     print(f"Loading SNN model from: {container.config.model.path()}")
     print("✅ SNN model loaded successfully via DI Container.")
 
-    # Gradioインターフェースの構築
-    chatbot_interface = gr.ChatInterface(
-        fn=chat_service.handle_message,
-        title="🤖 SNN-based AI Chat Prototype (DI Refactored)",
-        description="進化したBreakthroughSNNモデルとのリアルタイム対話。メッセージを入力してEnterキーを押してください。",
-        chatbot=gr.Chatbot(height=500),
-        textbox=gr.Textbox(placeholder="SNNモデルに話しかける...", container=False, scale=7),
-        retry_btn=None,
-        undo_btn="削除",
-        clear_btn="クリア",
-    )
+    # Gradio Blocks を使用してUIを構築
+    with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue", secondary_hue="sky")) as demo:
+        gr.Markdown(
+            """
+            # 🤖 SNN-based AI Chat Prototype
+            進化したBreakthroughSNNモデルとのリアルタイム対話。
+            右側のパネルには、推論時間や総スパイク数（エネルギー効率の代理指標）などの統計情報がリアルタイムで表示されます。
+            """
+        )
+        
+        initial_stats_md = """
+        **Inference Time:** `N/A`
+        **Tokens/Second:** `N/A`
+        ---
+        **Total Spikes:** `N/A`
+        **Spikes/Second:** `N/A`
+        """
+
+        with gr.Row():
+            with gr.Column(scale=2):
+                chatbot = gr.Chatbot(label="SNN Chat", height=500, avatar_images=("user.png", "assistant.png"))
+            with gr.Column(scale=1):
+                stats_display = gr.Markdown(value=initial_stats_md, label="📊 Inference Stats")
+
+        with gr.Row():
+            msg_textbox = gr.Textbox(
+                show_label=False,
+                placeholder="SNNモデルに話しかける...",
+                container=False,
+                scale=7,
+            )
+            submit_btn = gr.Button("Send", variant="primary", scale=1)
+
+        def clear_all():
+            return [], None, initial_stats_md
+
+        # `submit` アクションの定義
+        submit_btn.click(
+            fn=chat_service.stream_response,
+            inputs=[msg_textbox, chatbot],
+            outputs=[chatbot, stats_display]
+        )
+        # テキストボックスをクリアするアクションを追加
+        submit_btn.click(fn=lambda: "", inputs=None, outputs=msg_textbox)
+
+        # Enterキーでの送信
+        msg_textbox.submit(
+            fn=chat_service.stream_response,
+            inputs=[msg_textbox, chatbot],
+            outputs=[chatbot, stats_display]
+        )
+        msg_textbox.submit(fn=lambda: "", inputs=None, outputs=msg_textbox)
 
     # Webアプリケーションの起動
     print("\nStarting Gradio web server...")
     print(f"Please open http://{container.config.app.server_name()}:{container.config.app.server_port()} in your browser.")
-    chatbot_interface.launch(
+    demo.launch(
         server_name=container.config.app.server_name(),
         server_port=container.config.app.server_port(),
     )

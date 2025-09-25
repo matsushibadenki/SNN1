@@ -8,9 +8,10 @@
 # - 独自Vocabularyを廃止し、Hugging Face Tokenizerに全面的に移行。
 # - トークナイザの読み込み元をdistillation設定から共通設定に変更。
 # - 損失関数にpad_idではなくtokenizerプロバイダを渡すように修正し、依存関係の解決を遅延させる。
+# - スケジューラの依存関係問題を解決するため、プロバイダの定義方法をリファクタリング。
 
 from dependency_injector import containers, providers
-from torch.optim import AdamW
+from torch.optim import AdamW, Optimizer
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -54,32 +55,31 @@ class TrainingContainer(containers.DeclarativeContainer):
         lr=config.training.learning_rate,
     )
     
-    # --- 学習率スケジューラ (ウォームアップ付き) ---
-    warmup_scheduler = providers.Factory(
-        LinearLR,
-        optimizer=optimizer,
-        start_factor=1e-3,
-        total_iters=config.training.warmup_epochs,
-    )
-    
-    main_scheduler_t_max = providers.Factory(
-        _calculate_t_max,
-        epochs=config.training.epochs.as_(int),
-        warmup_epochs=config.training.warmup_epochs.as_(int),
-    )
+    # --- 学習率スケジューラ ---
+    # 依存関係の問題を回避するため、optimizerを引数に取るファクトリメソッドとして再定義
+    @providers.factory
+    def scheduler(self, optimizer: Optimizer) -> SequentialLR:
+        warmup_scheduler = LinearLR(
+            optimizer=optimizer,
+            start_factor=1e-3,
+            total_iters=self.config.training.warmup_epochs(),
+        )
+        
+        main_scheduler_t_max = _calculate_t_max(
+            epochs=self.config.training.epochs(),
+            warmup_epochs=self.config.training.warmup_epochs(),
+        )
 
-    main_scheduler = providers.Factory(
-        CosineAnnealingLR,
-        optimizer=optimizer,
-        T_max=main_scheduler_t_max,
-    )
+        main_scheduler = CosineAnnealingLR(
+            optimizer=optimizer,
+            T_max=main_scheduler_t_max,
+        )
 
-    scheduler = providers.Factory(
-        SequentialLR,
-        optimizer=optimizer,
-        schedulers=providers.List(warmup_scheduler, main_scheduler),
-        milestones=providers.List(config.training.warmup_epochs),
-    )
+        return SequentialLR(
+            optimizer=optimizer,
+            schedulers=[warmup_scheduler, main_scheduler],
+            milestones=[self.config.training.warmup_epochs()],
+        )
     
     # --- 損失関数 ---
     standard_loss = providers.Factory(

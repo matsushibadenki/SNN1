@@ -2,10 +2,11 @@
 # SNNモデルの定義、次世代ニューロンなど、中核となるロジックを集約したライブラリ
 #
 # 変更点:
+# - STDPSynapseクラスに、実際のSTDP学習ロジックを実装。
 # - Izhikevichニューロンモデルを新たに追加。
 # - BreakthroughSNN.forwardに `pool_method` 引数を追加。
 #   これにより、言語モデリングだけでなく、分類タスク用の特徴量抽出器としても機能するようになった。
-#   - 'mean': 時間軸とシーquence軸でスパイクを平均化し、分類用の固定長ベクトルを生成。
+#   - 'mean': 時間軸とシーケンス軸でスパイクを平均化し、分類用の固定長ベクトルを生成。
 #   - 'last': シーケンスの最後のトークンの隠れ状態を返し、分類に使用。
 # - 返り値の型ヒントを更新。
 
@@ -92,7 +93,6 @@ class MetaplasticLIFNeuron(nn.Module):
         activity_history_new = activity_history * self.meta_decay + spike.detach() * (1 - self.meta_decay)
         return spike, v_mem_new, activity_history_new
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 class IzhikevichNeuron(nn.Module):
     """
     Izhikevichニューロンモデル。
@@ -135,23 +135,65 @@ class IzhikevichNeuron(nn.Module):
         self.u = self.u * (1 - spike_d) + (self.u + self.d) * spike_d
         
         return spike
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 class STDPSynapse(nn.Module):
-    """ Spike-Timing-Dependent Plasticity シナプス """
+    """ 
+    Spike-Timing-Dependent Plasticity シナプス 
+    - forwardパスでは通常の線形層として振る舞う。
+    - pre/postスパイクを受け取り、STDP則に基づいて重みを更新する。
+    """
     pre_trace: torch.Tensor
     post_trace: torch.Tensor
-    pre_rate: torch.Tensor
-    post_rate: torch.Tensor
 
-    def __init__(self, in_features: int, out_features: int, tau_pre: float = 20.0, tau_post: float = 20.0, A_pos: float = 0.01, A_neg: float = 0.005, w_min: float = 0.0, w_max: float = 1.0, homeostatic_scaling: bool = True):
+    def __init__(self, in_features: int, out_features: int, 
+                 tau_pre: float = 20.0, tau_post: float = 20.0,
+                 A_pos: float = 0.01, A_neg: float = 0.005,
+                 w_min: float = 0.0, w_max: float = 1.0):
         super().__init__()
-        # ... (実装は省略)
-        self.weight = nn.Parameter(torch.rand(out_features, in_features) * 0.5 + 0.25)
+        self.in_features = in_features
+        self.out_features = out_features
+        self.tau_pre = tau_pre
+        self.tau_post = tau_post
+        self.A_pos = A_pos
+        self.A_neg = A_neg
+        self.w_min = w_min
+        self.w_max = w_max
+        
+        self.weight = nn.Parameter(torch.rand(out_features, in_features) * (w_max - w_min) + w_min)
+        
+        # スパイクのトレース（痕跡）を記録するバッファ
         self.register_buffer('pre_trace', torch.zeros(1, in_features))
-        # ... (実装は省略)
-    
-    # ... (forward, _update_stdp, _apply_homeostatic_scaling の実装は省略)
+        self.register_buffer('post_trace', torch.zeros(1, out_features))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """ 通常の線形変換として動作 """
+        return F.linear(x, self.weight)
+
+    @torch.no_grad()
+    def update_weights(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor):
+        """ STDP則に基づいてシナプス重みを更新する """
+        # トレースの減衰
+        self.pre_trace *= math.exp(-1.0 / self.tau_pre)
+        self.post_trace *= math.exp(-1.0 / self.tau_post)
+
+        # スパイクがあったニューロンのトレースを増加
+        self.pre_trace += pre_spikes.mean(dim=0, keepdim=True)
+        self.post_trace += post_spikes.mean(dim=0, keepdim=True)
+
+        # 重み更新量の計算
+        # 1. ポストシナプスニューロンが発火した場合 (LTP: Long-Term Potentiation)
+        #    -> pre_trace（直前のプリ側の活動）に応じて重みを増加
+        delta_w_pos = self.A_pos * torch.outer(post_spikes.mean(dim=0), self.pre_trace.squeeze(0))
+        
+        # 2. プリシナプスニューロンが発火した場合 (LTD: Long-Term Depression)
+        #    -> post_trace（直前のポスト側の活動）に応じて重みを減少
+        delta_w_neg = self.A_neg * torch.outer(self.post_trace.squeeze(0), pre_spikes.mean(dim=0))
+        
+        # 重みの更新とクリッピング
+        new_weight = self.weight + delta_w_pos - delta_w_neg
+        self.weight.data = torch.clamp(new_weight, self.w_min, self.w_max)
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 class STPSynapse(nn.Module):
     """ 短期シナプス可塑性 """

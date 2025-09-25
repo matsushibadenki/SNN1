@@ -57,10 +57,9 @@ class ANNBaselineModel(nn.Module):
         # Transformerエンコーダに入力
         encoded = self.transformer_encoder(embedded, src_key_padding_mask=src_padding_mask)
         
-        # パディングを考慮した平均プーリング
-        mask = ~src_padding_mask.unsqueeze(-1).expand_as(encoded)
-        masked_encoded = encoded * mask.float()
-        pooled = masked_encoded.sum(dim=1) / mask.float().sum(dim=1)
+        # [CLS]トークン（シーケンスの先頭）の出力を取得して分類
+        # ここでは簡単化のため、シーケンス全体の平均プーリングで代用
+        pooled = encoded.mean(dim=1)
         
         logits = self.classifier(pooled)
         return logits

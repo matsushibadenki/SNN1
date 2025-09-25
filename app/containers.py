@@ -9,6 +9,7 @@
 # - トークナイザの読み込み元をdistillation設定から共通設定に変更。
 # - 損失関数にpad_idではなくtokenizerプロバイダを渡すように修正し、依存関係の解決を遅延させる。
 # - スケジューラの依存関係問題を解決するため、メソッドから独立した関数ファクトリにリファクタリング。
+# - Trainerの定義にuse_ampとlog_dirを追加。
 
 from dependency_injector import containers, providers
 from torch.optim import AdamW, Optimizer
@@ -113,12 +114,16 @@ class TrainingContainer(containers.DeclarativeContainer):
         BreakthroughTrainer,
         criterion=standard_loss,
         grad_clip_norm=config.training.grad_clip_norm,
+        use_amp=config.training.use_amp,
+        log_dir=config.training.log_dir,
     )
 
     distillation_trainer = providers.Factory(
         DistillationTrainer,
         criterion=distillation_loss,
         grad_clip_norm=config.training.grad_clip_norm,
+        use_amp=config.training.use_amp,
+        log_dir=config.training.log_dir,
     )
 
 

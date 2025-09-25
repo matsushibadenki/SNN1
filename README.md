@@ -48,6 +48,11 @@ python train.py \\
     \--model\_config configs/models/small.yaml \\  
     \--data\_path data/sample\_data.jsonl
 
+\# WikiTextデータセットで学習を開始
+    \--config configs/base\_config.yaml \\  
+    \--model\_config configs/models/small.yaml \\  
+    \--data\_path data/wikitext-103\_train.jsonl
+
 #### **3.2. 大規模分散学習 (Multi-GPU)**
 
 新しく追加された run\_distributed\_training.sh を使用します。**このスクリプトは、利用可能な全てのGPUを自動検出し、分散学習を開始します。**

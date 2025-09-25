@@ -2,16 +2,23 @@
 #
 # SNNモデルとの性能比較を行うためのANNベースラインモデル
 #
+# 目的:
+# - ロードマップ フェーズ1「1.2. ANNベースラインとの比較」に対応。
+# - SNNとほぼ同等のパラメータ数を持つ標準的なANNモデルを実装し、
+#   公平な性能比較の土台を築く。
+#
+# アーキテクチャ:
+# - 事前学習済みモデルは使用せず、スクラッチで学習するシンプルなTransformerエンコーダを採用。
+# - 単語埋め込み層 + Transformerエンコーダ層 + 分類ヘッドという標準的な構成。
+#
 # 変更点:
 # - __init__ に num_classes 引数を追加し、分類先のクラス数を可変にした。
-#   これにより、SST-2 (2クラス分類) 以外のタスクにも対応可能になった。
 
 import torch
 import torch.nn as nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 
 class ANNBaselineModel(nn.Module):
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     """
     シンプルなTransformerベースのテキスト分類モデル。
     BreakthroughSNNとの比較用。
@@ -29,7 +36,6 @@ class ANNBaselineModel(nn.Module):
         self.classifier = nn.Linear(d_model, num_classes)
 
         self.init_weights()
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     def init_weights(self) -> None:
         initrange = 0.1

@@ -5,6 +5,7 @@
 # - TensorBoardと連携し、学習・検証のメトリクスをリアルタイムで可視化。
 # - 検証データセットでモデル性能を評価する `evaluate` メソッドを実装。
 # - 検証結果に基づき、最も性能の良いモデルを `best_model.pth` として保存する機能を追加。
+# - GradScalerの非推奨警告を修正。
 
 import torch
 import torch.nn as nn
@@ -31,7 +32,8 @@ class BreakthroughTrainer:
         self.grad_clip_norm = grad_clip_norm
         self.rank = rank
         self.use_amp = use_amp and torch.cuda.is_available()
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        # 非推奨警告を修正
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp) if self.device == 'cuda' else torch.amp.GradScaler('cpu', enabled=self.use_amp)
         self.best_metric = float('inf') # 損失を追跡するため、無限大で初期化
         
         # rank 0 のプロセスのみがTensorBoardの書き込みとコンソール出力を行う

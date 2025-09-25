@@ -1,14 +1,15 @@
-# **SNNベース AIチャットシステム (v2.3 \- 設定ファイルモジュール化)**
+# **SNNベース AIチャットシステム (v2.4 \- 大規模分散学習環境)**
 
 ## **1\. 概要**
 
-本プロジェクトは、スパイキングニューラルネットワーク（SNN）技術を基盤とした、次世代のAIチャットシステムです。DIコンテナの導入により、研究開発からアプリケーション化までをシームレスに繋ぐ、高い保守性と拡張性を持つアーキテクチャに刷新されました。
+本プロジェクトは、スパイキングニューラルネットワーク（SNN）技術を基盤とした、次世代のAIチャットシステムです。DIコンテナの導入により、研究開発からアプリケーション化までをシSeamlessに繋ぐ、高い保守性と拡張性を持つアーキテクチャに刷新されました。
 
 ### **1.1. 設計思想**
 
 * **関心の分離:** snn\_research（SNNコア技術の研究開発）と app（モデルを利用するアプリケーション）を明確に分離。  
 * **依存性の注入 (DI):** dependency-injector を用い、クラス間の依存関係を外部コンテナで管理することで、疎結合でテスト容易性の高い設計を実現。  
-* **設定のモジュール化:** 学習設定（configs/base\_config.yaml）とモデルアーキテクチャ設定（configs/models/\*.yaml）を分離し、実験の組み合わせを容易に。
+* **設定のモジュール化:** 学習設定（configs/base\_config.yaml）とモデルアーキテクチャ設定（configs/models/\*.yaml）を分離し、実験の組み合わせを容易に。  
+* **スケーラブルな学習環境:** torchrun を活用し、複数GPUを用いた大規模な分散学習を堅牢かつ容易に実行できる環境を構築。
 
 ## **2\. 使い方 (How to Use)**
 
@@ -26,7 +27,7 @@ WikiTextのような大規模データセットを準備する場合、以下の
 
 python \-m scripts.data\_preparation
 
-#### **2.2. 知識蒸留用データ (必須)**
+#### **2.2. 知識蒸留用データ (推奨)**
 
 知識蒸留を行う前に、教師モデルのロジットを事前計算する必要があります。
 
@@ -37,32 +38,31 @@ python \-m scripts.prepare\_distillation\_data \\
 
 ### **ステップ3: モデルの学習**
 
-統合学習スクリプト train.py を使用します。--configでベース設定を、--model\_configでモデルのアーキテクチャを指定します。
+#### **3.1. 単一デバイスでの学習**
 
-**例1: 基本的な学習（smallモデル）**
+train.py を直接実行します。--configでベース設定を、--model\_configでモデルのアーキテクチャを指定します。
 
-\# smallモデルのアーキテクチャで学習を開始します。  
+\# smallモデルのアーキテクチャで学習を開始  
 python train.py \\  
     \--config configs/base\_config.yaml \\  
     \--model\_config configs/models/small.yaml \\  
     \--data\_path data/sample\_data.jsonl
 
-**例2: 知識蒸留（mediumモデル, GPUが2つ以上ある場合）**
+#### **3.2. 大規模分散学習 (Multi-GPU)**
 
-\# 1\. configs/base\_config.yaml の training.type を "distillation" に変更  
-\# 2\. mediumモデルのアーキテクチャで知識蒸留を実行  
-\#    (スクリプトが自動でGPUを検出し、分散学習を開始します)  
-python train.py \\  
-    \--config configs/base\_config.yaml \\  
-    \--model\_config configs/models/medium.yaml \\  
-    \--data\_path precomputed\_data/
+新しく追加された run\_distributed\_training.sh を使用します。**このスクリプトは、利用可能な全てのGPUを自動検出し、分散学習を開始します。**
+
+\# スクリプトに実行権限を付与  
+chmod \+x scripts/run\_distributed\_training.sh
+
+\# 分散学習を開始 (スクリプト内の設定が使用されます)  
+./scripts/run\_distributed\_training.sh
 
 ### **ステップ4: 対話アプリケーションの起動**
 
 学習済みのモデルを使って、GradioベースのチャットUIを起動します。**学習時に使用したモデル設定ファイルを指定してください。**
 
-**例: mediumモデルを起動**
-
+\# 例: mediumモデルを起動  
 python \-m app.main \\  
     \--config configs/base\_config.yaml \\  
     \--model\_config configs/models/medium.yaml

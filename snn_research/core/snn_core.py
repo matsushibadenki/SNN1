@@ -2,12 +2,12 @@
 # SNNモデルの定義、次世代ニューロンなど、中核となるロジックを集約したライブラリ
 #
 # 変更点:
+# - AttentionalSpikingSSMLayerのforwardメソッドを修正し、
+#   バッチごとにシーケンス長が異なる場合に隠れ状態を正しく再初期化するようにした。
 # - STDPSynapseクラスに、実際のSTDP学習ロジックを実装。
 # - Izhikevichニューロンモデルを新たに追加。
 # - BreakthroughSNN.forwardに `pool_method` 引数を追加。
 #   これにより、言語モデリングだけでなく、分類タスク用の特徴量抽出器としても機能するようになった。
-#   - 'mean': 時間軸とシーケンス軸でスパイクを平均化し、分類用の固定長ベクトルを生成。
-#   - 'last': シーケンスの最後のトークンの隠れ状態を返し、分類に使用。
 # - 返り値の型ヒントを更新。
 
 import torch
@@ -136,7 +136,6 @@ class IzhikevichNeuron(nn.Module):
         
         return spike
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 class STDPSynapse(nn.Module):
     """ 
     Spike-Timing-Dependent Plasticity シナプス 
@@ -193,7 +192,6 @@ class STDPSynapse(nn.Module):
         # 重みの更新とクリッピング
         new_weight = self.weight + delta_w_pos - delta_w_neg
         self.weight.data = torch.clamp(new_weight, self.w_min, self.w_max)
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 class STPSynapse(nn.Module):
     """ 短期シナプス可塑性 """
@@ -302,9 +300,15 @@ class AttentionalSpikingSSMLayer(nn.Module):
         batch_size, time_steps, seq_len, _ = x.shape
         
         # 状態変数の初期化とデバイス移動
-        h = self.h_state.clone().expand(batch_size, seq_len, -1).detach()
-        state_v = self.state_v_mem.clone().expand(batch_size, seq_len, -1).detach()
-        output_v = self.output_v_mem.clone().expand(batch_size, seq_len, -1).detach()
+        # バッチサイズかシーケンス長が変わっていたら、隠れ状態をリセット
+        if self.h_state.shape[0] != batch_size or self.h_state.shape[1] != seq_len:
+            h = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
+            state_v = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
+            output_v = torch.zeros(batch_size, seq_len, self.d_model, device=x.device)
+        else:
+            h = self.h_state.clone().detach()
+            state_v = self.state_v_mem.clone().detach()
+            output_v = self.output_v_mem.clone().detach()
 
         outputs = []
         for t in range(time_steps):

@@ -49,6 +49,7 @@ python train.py \\
     \--data\_path data/sample\_data.jsonl
 
 \# WikiTextデータセットで学習を開始
+python train.py \\  
     \--config configs/base\_config.yaml \\  
     \--model\_config configs/models/small.yaml \\  
     \--data\_path data/wikitext-103\_train.jsonl

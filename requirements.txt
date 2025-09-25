@@ -14,3 +14,4 @@ dependency-injector[yaml]
 pyyaml
 langchain
 langchain-core
+tensorboard

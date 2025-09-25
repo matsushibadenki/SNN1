@@ -9,10 +9,10 @@
 import os
 import json
 import time
-import pandas as pd
-from datasets import load_dataset
-from sklearn.metrics import accuracy_score
-from tqdm import tqdm
+import pandas as pd  # type: ignore
+from datasets import load_dataset  # type: ignore
+from sklearn.metrics import accuracy_score  # type: ignore
+from tqdm import tqdm  # type: ignore
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
@@ -60,7 +60,6 @@ def create_collate_fn_for_classification(tokenizer: PreTrainedTokenizerBase):
         return tokenized['input_ids'], tokenized['attention_mask'], torch.tensor(targets, dtype=torch.long)
     return collate_fn
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 # --- 3. 最新アーキテクチャを使用した分類モデル ---
 class SNNClassifier(nn.Module):
     """BreakthroughSNNをバックボーンとして使用する分類器。"""
@@ -154,7 +153,7 @@ def run_benchmark_for_model(model_type: str, data_paths: dict, tokenizer: PreTra
         print(f"  {model_type} Average Spikes per Sample: {avg_spikes_per_sample:,.2f}")
         
     return {"model": model_type, "accuracy": accuracy, "avg_latency_ms": avg_latency_ms, "avg_spikes_per_sample": avg_spikes_per_sample}
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾◾️◾️◾️◾️◾️
+
 # --- 5. メイン実行ブロック (変更なし) ---
 if __name__ == "__main__":
     pd.set_option('display.precision', 4)

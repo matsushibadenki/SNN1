@@ -2,9 +2,10 @@
 # SNNモデルの定義、次世代ニューロンなど、中核となるロジックを集約したライブラリ
 #
 # 変更点:
+# - Izhikevichニューロンモデルを新たに追加。
 # - BreakthroughSNN.forwardに `pool_method` 引数を追加。
 #   これにより、言語モデリングだけでなく、分類タスク用の特徴量抽出器としても機能するようになった。
-#   - 'mean': 時間軸とシーケンス軸でスパイクを平均化し、分類用の固定長ベクトルを生成。
+#   - 'mean': 時間軸とシーquence軸でスパイクを平均化し、分類用の固定長ベクトルを生成。
 #   - 'last': シーケンスの最後のトークンの隠れ状態を返し、分類に使用。
 # - 返り値の型ヒントを更新。
 
@@ -90,6 +91,51 @@ class MetaplasticLIFNeuron(nn.Module):
         v_mem_new = v_potential * (1.0 - spike.detach())
         activity_history_new = activity_history * self.meta_decay + spike.detach() * (1 - self.meta_decay)
         return spike, v_mem_new, activity_history_new
+
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+class IzhikevichNeuron(nn.Module):
+    """
+    Izhikevichニューロンモデル。
+    多様な発火パターンを再現できる、計算効率の良いモデル。
+    """
+    v: torch.Tensor
+    u: torch.Tensor
+
+    def __init__(self, features: int, a: float = 0.02, b: float = 0.2, c: float = -65.0, d: float = 8.0, threshold: float = 30.0):
+        super().__init__()
+        self.features = features
+        self.a = a
+        self.b = b
+        self.c = c
+        self.d = d
+        self.threshold = threshold
+        self.surrogate_function = surrogate.ATan(alpha=2.0)
+        
+        # 膜電位vと回復変数uをバッファとして登録
+        self.register_buffer('v', torch.ones(features) * self.c)
+        self.register_buffer('u', torch.ones(features) * self.c * self.b)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 状態変数を現在のバッチサイズに合わせる
+        if self.v.shape[0] != x.shape[0] or self.v.dim() != x.dim():
+            self.v = torch.ones_like(x) * self.c
+            self.u = torch.ones_like(x) * self.v * self.b
+
+        # 膜電位と回復変数の更新
+        self.v += 0.5 * (0.04 * self.v**2 + 5 * self.v + 140 - self.u + x)
+        self.v += 0.5 * (0.04 * self.v**2 + 5 * self.v + 140 - self.u + x) # 2回適用して精度向上
+        self.u += self.a * (self.b * self.v - self.u)
+
+        # スパイク発火
+        spike = self.surrogate_function(self.v - self.threshold)
+        
+        # スパイク後のリセット (detachして勾配計算から切り離す)
+        spike_d = spike.detach()
+        self.v = self.v * (1 - spike_d) + self.c * spike_d
+        self.u = self.u * (1 - spike_d) + (self.u + self.d) * spike_d
+        
+        return spike
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 class STDPSynapse(nn.Module):
     """ Spike-Timing-Dependent Plasticity シナプス """
@@ -261,7 +307,6 @@ class AttentionalSpikingSSMLayer(nn.Module):
 
 
 class BreakthroughSNN(nn.Module):
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     """
     AttentionalSpikingSSMLayerを統合した、次世代のSNNアーキテクチャ。
     言語モデリングと分類タスクの両方に対応可能。
@@ -339,4 +384,3 @@ class BreakthroughSNN(nn.Module):
         if return_spikes:
             return output, hidden_states
         return output, torch.empty(0, device=output.device)
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️

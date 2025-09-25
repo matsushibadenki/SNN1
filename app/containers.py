@@ -6,6 +6,7 @@
 # - 設定ファイルに基づいてオブジェクトを生成・設定する。
 # - 学習用とアプリ用のコンテナを分離し、関心を分離。
 # - 独自Vocabularyを廃止し、Hugging Face Tokenizerに全面的に移行。
+# - トークナイザの読み込み元をdistillation設定から共通設定に変更。
 
 from dependency_injector import containers, providers
 from torch.optim import AdamW
@@ -29,10 +30,10 @@ class TrainingContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
 
     # --- トークナイザ ---
-    # 蒸留時はteacherとstudentで同じものを使用する
+    # 共通設定からトークナイザ名を読み込むように修正
     tokenizer = providers.Factory(
         AutoTokenizer.from_pretrained,
-        pretrained_model_name_or_path=config.training.distillation.teacher_model
+        pretrained_model_name_or_path=config.data.tokenizer_name
     )
 
     # --- モデル関連 ---
@@ -108,13 +109,11 @@ class TrainingContainer(containers.DeclarativeContainer):
         grad_clip_norm=config.training.grad_clip_norm,
     )
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     distillation_trainer = providers.Factory(
         DistillationTrainer,
         criterion=distillation_loss,
         grad_clip_norm=config.training.grad_clip_norm,
     )
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 
 class AppContainer(containers.DeclarativeContainer):

@@ -6,6 +6,7 @@
 # - RANKやWORLD_SIZEなどの分散学習設定を環境変数から自動で読み取るように変更。
 # - 分散学習のセットアップとクリーンアップ処理を関数に分離。
 # - --distributed フラグを追加し、分散学習モードを明示的に指定するようにした。
+# - train_epochの呼び出しに epoch 引数を追加。
 
 import os
 import argparse
@@ -133,13 +134,22 @@ def main():
     if rank in [-1, 0]: print(f"\n🔥 {container.config.training.type()} 学習を開始します...")
     for epoch in range(container.config.training.epochs()):
         if is_distributed and sampler: sampler.set_epoch(epoch)
-        metrics = trainer.train_epoch(dataloader)
+        metrics = trainer.train_epoch(dataloader, epoch)
         if rank in [-1, 0]:
             lr = scheduler.get_last_lr()[0] if scheduler else container.config.training.learning_rate()
             metrics_str = ", ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
             print(f"Epoch {epoch+1: >3}/{container.config.training.epochs()}: {metrics_str}, lr: {lr:.6f}")
             if (epoch + 1) % container.config.training.log_interval() == 0:
-                trainer.save_checkpoint(container.config.model.path(), epoch, tokenizer_name=tokenizer.name_or_path, config=model_config)
+                # evaluateを呼び出す場合、ここでもepochを渡す必要がある
+                # val_metrics = trainer.evaluate(val_dataloader, epoch)
+                # checkpoint保存時のメトリクスは別途定義が必要
+                trainer.save_checkpoint(
+                    path=os.path.join(container.config.training.log_dir(), "checkpoint.pth"),
+                    epoch=epoch,
+                    metric_value=metrics.get('total', float('inf')), # 仮にtotal lossを使用
+                    tokenizer_name=tokenizer.name_or_path, 
+                    config=model_config
+                )
 
     if is_distributed:
         cleanup_distributed()

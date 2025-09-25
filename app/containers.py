@@ -9,6 +9,7 @@
 # - トークナイザの読み込み元をdistillation設定から共通設定に変更。
 # - 損失関数にpad_idではなくtokenizerプロバイダを渡すように修正し、依存関係の解決を遅延させる。
 # - スケジューラの依存関係問題を解決するため、プロバイダの定義方法をリファクタリング。
+# - @providers.factory のタイポを @providers.Factory に修正。
 
 from dependency_injector import containers, providers
 from torch.optim import AdamW, Optimizer
@@ -57,7 +58,7 @@ class TrainingContainer(containers.DeclarativeContainer):
     
     # --- 学習率スケジューラ ---
     # 依存関係の問題を回避するため、optimizerを引数に取るファクトリメソッドとして再定義
-    @providers.factory
+    @providers.Factory
     def scheduler(self, optimizer: Optimizer) -> SequentialLR:
         warmup_scheduler = LinearLR(
             optimizer=optimizer,

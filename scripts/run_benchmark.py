@@ -1,30 +1,29 @@
 # matsushibadenki/snn/scripts/run_benchmark.py
-# GLUEベンチマーク (SST-2) を用いたSNN vs ANN 性能評価スクリプト (Tokenizer移行版)
+# GLUEベンチマーク (SST-2) を用いたSNN vs ANN 性能評価スクリプト (最新アーキテクチャ対応版)
 #
 # 目的:
-# - ロードマップ フェーズ1「1.2」に対応。
-# - SNNとANNの感情分析性能を客観的に比較・評価する。
-# - SNNのエネルギー消費の代理指標として「合計スパイク数」を計測し、比較項目に追加。
-# - 独自Vocabularyを廃止し、Hugging Face Tokenizerを使用するよう変更。
+# - ロードマップ フェーズ2「2.3. アーキテクチャの進化」を評価。
+# - 最新の `BreakthroughSNN` モデルをバックボーンとして使用し、その性能を直接測定する。
+# - 旧式の `SNNClassifier` を廃止し、常にコアアーキテクチャの最新の性能を評価できるようにする。
 
 import os
 import json
 import time
-import pandas as pd  # type: ignore
-from datasets import load_dataset  # type: ignore
-from sklearn.metrics import accuracy_score  # type: ignore
-from tqdm import tqdm  # type: ignore
+import pandas as pd
+from datasets import load_dataset
+from sklearn.metrics import accuracy_score
+from tqdm import tqdm
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
-from torch.nn.utils.rnn import pad_sequence
-from typing import Dict, Any, List, Tuple
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from typing import Dict, Any, List, Tuple
 
+# 最新のSNNアーキテクチャをインポート
 from snn_research.core.snn_core import BreakthroughSNN
 from snn_research.benchmark.ann_baseline import ANNBaselineModel
 
-# --- 1. データ準備 ---
+# --- 1. データ準備 (変更なし) ---
 def prepare_sst2_data(output_dir: str = "data") -> Dict[str, str]:
     if not os.path.exists(output_dir): os.makedirs(output_dir)
     dataset = load_dataset("glue", "sst2")
@@ -39,14 +38,13 @@ def prepare_sst2_data(output_dir: str = "data") -> Dict[str, str]:
     return data_paths
 
 
-# --- 2. 共通データセット ---
+# --- 2. 共通データセット (変更なし) ---
 class ClassificationDataset(Dataset):
     def __init__(self, file_path: str):
         with open(file_path, 'r', encoding='utf-8') as f:
             self.data = [json.loads(line) for line in f]
     def __len__(self) -> int: return len(self.data)
     def __getitem__(self, idx: int) -> Tuple[str, int]:
-        # collate_fnでまとめてトークン化するため、テキストとラベルをそのまま返す
         return self.data[idx]['text'], self.data[idx]['label']
 
 def create_collate_fn_for_classification(tokenizer: PreTrainedTokenizerBase):
@@ -62,25 +60,31 @@ def create_collate_fn_for_classification(tokenizer: PreTrainedTokenizerBase):
         return tokenized['input_ids'], tokenized['attention_mask'], torch.tensor(targets, dtype=torch.long)
     return collate_fn
 
-# --- 3. SNN 分類モデル ---
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+# --- 3. 最新アーキテクチャを使用した分類モデル ---
 class SNNClassifier(nn.Module):
+    """BreakthroughSNNをバックボーンとして使用する分類器。"""
     def __init__(self, vocab_size: int, d_model: int, d_state: int, num_layers: int, time_steps: int, n_head: int, num_classes: int):
         super().__init__()
+        # SNNバックボーンを初期化
         self.snn_backbone = BreakthroughSNN(vocab_size, d_model, d_state, num_layers, time_steps, n_head)
+        # 分類用のヘッドを追加
         self.classifier = nn.Linear(d_model, num_classes)
     
-    def forward(self, input_ids: torch.Tensor, src_padding_mask: Any = None) -> Tuple[torch.Tensor, torch.Tensor]:
-        logits, spikes = self.snn_backbone(input_ids, return_spikes=True)
-        # SNNバックボーンからのスパイク情報を利用して分類
-        if spikes.numel() > 0:
-            pooled_features = spikes.mean(dim=1).mean(dim=1)
-        else: # スパイクがない場合（フォールバック）
-            pooled_features = torch.zeros(input_ids.shape[0], self.snn_backbone.output_projection.in_features, device=input_ids.device)
-        
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # バックボーンからプーリングされた特徴量とスパイク情報を取得
+        # pool_method='mean' を使用して、分類に適した固定長ベクトルを得る
+        pooled_features, spikes = self.snn_backbone(
+            input_ids, 
+            attention_mask=attention_mask,
+            return_spikes=True, 
+            pool_method='mean'
+        )
+        # 分類ヘッドでロジットを計算
         logits = self.classifier(pooled_features)
         return logits, spikes
 
-# --- 4. 実行関数 ---
+# --- 4. 実行関数 (モデル呼び出し部分を更新) ---
 def run_benchmark_for_model(model_type: str, data_paths: dict, tokenizer: PreTrainedTokenizerBase, model_params: dict) -> Dict[str, Any]:
     print("\n" + "="*20 + f" 🚀 Starting {model_type} Benchmark " + "="*20)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -95,9 +99,10 @@ def run_benchmark_for_model(model_type: str, data_paths: dict, tokenizer: PreTra
     vocab_size = tokenizer.vocab_size
     model: nn.Module
     if model_type == 'SNN':
+        # 新しいSNNClassifierを使用
         model = SNNClassifier(vocab_size=vocab_size, **model_params, num_classes=2).to(device)
     else: # ANN
-        model = ANNBaselineModel(vocab_size=vocab_size, **model_params).to(device)
+        model = ANNBaselineModel(vocab_size=vocab_size, **model_params, num_classes=2).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
     criterion = nn.CrossEntropyLoss()
@@ -106,12 +111,14 @@ def run_benchmark_for_model(model_type: str, data_paths: dict, tokenizer: PreTra
 
     for epoch in range(3):
         model.train()
-        for inputs, attention_mask, targets in tqdm(loader_train, desc=f"{model_type} Epoch {epoch+1}"):
-            inputs, targets = inputs.to(device), targets.to(device)
-            padding_mask = (attention_mask == 0) # 0がパディング
+        for input_ids, attention_mask, targets in tqdm(loader_train, desc=f"{model_type} Epoch {epoch+1}"):
+            input_ids, attention_mask, targets = input_ids.to(device), attention_mask.to(device), targets.to(device)
             optimizer.zero_grad()
             
-            outputs, _ = model(inputs, src_padding_mask=padding_mask) if model_type == 'SNN' else (model(inputs, src_padding_mask=padding_mask), None)
+            if model_type == 'SNN':
+                outputs, _ = model(input_ids, attention_mask=attention_mask)
+            else:
+                outputs = model(input_ids, src_padding_mask=(attention_mask == 0))
 
             loss = criterion(outputs, targets)
             loss.backward()
@@ -123,15 +130,14 @@ def run_benchmark_for_model(model_type: str, data_paths: dict, tokenizer: PreTra
     latencies: List[float] = []
     total_spikes: float = 0.0
     with torch.no_grad():
-        for inputs, attention_mask, targets in tqdm(loader_val, desc=f"{model_type} Evaluating"):
-            inputs, targets = inputs.to(device), targets.to(device)
-            padding_mask = (attention_mask == 0)
+        for input_ids, attention_mask, targets in tqdm(loader_val, desc=f"{model_type} Evaluating"):
+            input_ids, attention_mask, targets = input_ids.to(device), attention_mask.to(device), targets.to(device)
             start_time = time.time()
             if model_type == 'SNN':
-                outputs, spikes = model(inputs, src_padding_mask=padding_mask)
+                outputs, spikes = model(input_ids, attention_mask=attention_mask)
                 total_spikes += spikes.sum().item()
             else:
-                outputs = model(inputs, src_padding_mask=padding_mask)
+                outputs = model(input_ids, src_padding_mask=(attention_mask == 0))
 
             latencies.append((time.time() - start_time) * 1000)
             preds = torch.argmax(outputs, dim=1)
@@ -139,22 +145,21 @@ def run_benchmark_for_model(model_type: str, data_paths: dict, tokenizer: PreTra
             true_labels.extend(targets.cpu().numpy())
             
     accuracy = accuracy_score(true_labels, pred_labels)
-    avg_latency = sum(latencies) / len(latencies)
-    avg_spikes = total_spikes / len(dataset_val) if model_type == 'SNN' else 'N/A'
+    avg_latency_ms = sum(latencies) / len(latencies)
+    avg_spikes_per_sample = total_spikes / len(dataset_val) if model_type == 'SNN' else 'N/A'
 
     print(f"  {model_type} Validation Accuracy: {accuracy:.4f}")
-    print(f"  {model_type} Average Inference Time (per batch): {avg_latency:.2f} ms")
+    print(f"  {model_type} Average Inference Time (per batch): {avg_latency_ms:.2f} ms")
     if model_type == 'SNN':
-        print(f"  {model_type} Average Spikes per Sample: {avg_spikes:,.2f}")
+        print(f"  {model_type} Average Spikes per Sample: {avg_spikes_per_sample:,.2f}")
         
-    return {"model": model_type, "accuracy": accuracy, "avg_latency_ms": avg_latency, "avg_spikes_per_sample": avg_spikes}
-
-# --- 5. メイン実行ブロック ---
+    return {"model": model_type, "accuracy": accuracy, "avg_latency_ms": avg_latency_ms, "avg_spikes_per_sample": avg_spikes_per_sample}
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾◾️◾️◾️◾️◾️
+# --- 5. メイン実行ブロック (変更なし) ---
 if __name__ == "__main__":
     pd.set_option('display.precision', 4)
     data_paths = prepare_sst2_data()
     
-    # 蒸留でも使うGPT-2のTokenizerをベンチマークでも使用し、条件を統一
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

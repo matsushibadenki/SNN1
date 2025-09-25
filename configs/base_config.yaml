@@ -3,7 +3,7 @@
 
 # 共通設定
 seed: 42
-device: "mps"
+device: "cuda" # デフォルトをcudaに変更
 
 # データ設定
 data:
@@ -16,11 +16,12 @@ data:
 training:
   type: "standard" # "standard", "distributed", "distillation" から選択
   epochs: 10
-  batch_size: 8 # メモリ不足エラー対策のため16から8に削減
+  batch_size: 8
   learning_rate: 0.0005
   use_scheduler: true
   grad_clip_norm: 1.0
   warmup_epochs: 1
+  use_amp: true # 自動混合精度(AMP)を有効にするフラグを追加
 
   # 損失関数の重み
   loss:
@@ -41,7 +42,7 @@ training:
 
 # 推論/アプリ設定
 inference:
-  device: "mps"
+  device: "cuda" # デフォルトをcudaに変更
   max_len: 50
 
 # Gradioアプリ設定

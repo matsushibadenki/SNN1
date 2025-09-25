@@ -2,19 +2,17 @@
 # SNNモデルの定義、次世代ニューロンなど、中核となるロジックを集約したライブラリ
 #
 # 変更点:
-# - ロードマップ フェーズ2「2.3. アーキテクチャの進化」をさらに推進。
-# - SSMの状態遷移計算にアテンション機構を統合した AttentionalSpikingSSMLayer を新規実装。
-#   これにより、入力スパイクの中から現在の状態にとって重要な情報を動的に選択することが可能になる。
-# - BreakthroughSNN を AttentionalSpikingSSMLayer を使用するように更新。
-#   - 各SSM層内でアテンションが適用されるため、最終層の SpikingTemporalAttention は削除。
-# - mypyエラー解消のため、型ヒントを全体的に追加・修正。
-# - spikingjellyとtqdmのimportに # type: ignore を追加。
+# - BreakthroughSNN.forwardに `pool_method` 引数を追加。
+#   これにより、言語モデリングだけでなく、分類タスク用の特徴量抽出器としても機能するようになった。
+#   - 'mean': 時間軸とシーケンス軸でスパイクを平均化し、分類用の固定長ベクトルを生成。
+#   - 'last': シーケンスの最後のトークンの隠れ状態を返し、分類に使用。
+# - 返り値の型ヒントを更新。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from spikingjelly.activation_based import neuron, surrogate, functional  # type: ignore
-from typing import Tuple, Dict, Any, Optional, List
+from typing import Tuple, Dict, Any, Optional, List, Union
 from torch.utils.data import DataLoader
 import os
 import collections
@@ -263,17 +261,19 @@ class AttentionalSpikingSSMLayer(nn.Module):
 
 
 class BreakthroughSNN(nn.Module):
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     """
     AttentionalSpikingSSMLayerを統合した、次世代のSNNアーキテクチャ。
+    言語モデリングと分類タスクの両方に対応可能。
     """
     def __init__(self, vocab_size: int, d_model: int, d_state: int, num_layers: int, time_steps: int, n_head: int):
         super().__init__()
         self.time_steps = time_steps
+        self.d_model = d_model
         
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.spike_encoder = TTFSEncoder(d_model=d_model, time_steps=time_steps)
         
-        # 新しいアテンション付きSSMレイヤーを使用
         self.ssm_layers = nn.ModuleList([
             AttentionalSpikingSSMLayer(d_model=d_model, d_state=d_state, n_head=n_head) 
             for _ in range(num_layers)
@@ -281,7 +281,27 @@ class BreakthroughSNN(nn.Module):
         
         self.output_projection = nn.Linear(d_model, vocab_size)
 
-    def forward(self, input_ids: torch.Tensor, return_spikes: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, 
+                input_ids: torch.Tensor, 
+                attention_mask: Optional[torch.Tensor] = None,
+                return_spikes: bool = False,
+                pool_method: Optional[str] = None
+               ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            input_ids (torch.Tensor): 入力トークンID (batch_size, seq_len)
+            attention_mask (Optional[torch.Tensor]): アテンションマスク (batch_size, seq_len)
+            return_spikes (bool): スパイク列を返すかどうか
+            pool_method (Optional[str]): 
+                - None: 言語モデルとして動作。ロジットを返す (batch_size, seq_len, vocab_size)。
+                - 'mean': 分類タスク用。シーケンス全体の特徴量を平均プーリングして返す (batch_size, d_model)。
+                - 'last': 分類タスク用。最後の非パディングトークンの特徴量を返す (batch_size, d_model)。
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: 
+                - pooled_features または logits
+                - hidden_states (スパイク列)
+        """
         token_emb = self.token_embedding(input_ids)
         spike_sequence = self.spike_encoder(token_emb)
         
@@ -291,11 +311,32 @@ class BreakthroughSNN(nn.Module):
             
         # 時間方向にスパイクを積分 (平均化)
         time_integrated = hidden_states.mean(dim=1)
-        logits = self.output_projection(time_integrated)
-        
+
         # SpikingJellyのモジュール状態をリセット
         functional.reset_net(self)
-        
+
+        output: torch.Tensor
+        if pool_method == 'mean':
+            if attention_mask is not None:
+                # パディング部分をマスクして平均を計算
+                mask = attention_mask.unsqueeze(-1).expand_as(time_integrated).float()
+                sum_features = (time_integrated * mask).sum(dim=1)
+                sum_mask = mask.sum(dim=1)
+                output = sum_features / sum_mask.clamp(min=1e-9)
+            else:
+                output = time_integrated.mean(dim=1)
+        elif pool_method == 'last':
+             if attention_mask is not None:
+                # 各バッチ要素の最後の非パディングトークンのインデックスを取得
+                last_token_indices = attention_mask.sum(dim=1) - 1
+                output = time_integrated[torch.arange(time_integrated.shape[0]), last_token_indices]
+             else:
+                output = time_integrated[:, -1, :]
+        else:
+            # デフォルトは言語モデリング
+            output = self.output_projection(time_integrated)
+
         if return_spikes:
-            return logits, hidden_states
-        return logits, torch.empty(0) # スパイクを返さない場合
+            return output, hidden_states
+        return output, torch.empty(0, device=output.device)
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️

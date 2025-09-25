@@ -11,7 +11,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import os
 import collections
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore
 from typing import Tuple, Dict, Any, Optional
 import shutil
 
@@ -187,4 +187,3 @@ class DistillationTrainer(BreakthroughTrainer):
             self.scaler.update()
         
         return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
-

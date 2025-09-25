@@ -4,16 +4,19 @@
 # 機能:
 # - snn_coreとknowledge_distillationから損失関数クラスを移動・集約。
 # - 蒸留時にTokenizerを統一したため、DistillationLoss内の不整合対応ロジックを削除。
+# - DIコンテナの依存関係解決を遅延させるため、pad_idではなくtokenizerを直接受け取るように変更。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict
+from transformers import PreTrainedTokenizerBase
 
 class CombinedLoss(nn.Module):
     """クロスエントロピー損失とスパイク発火率の正則化を組み合わせた損失関数。"""
-    def __init__(self, ce_weight: float, spike_reg_weight: float, pad_id: int, target_spike_rate: float = 0.02):
+    def __init__(self, ce_weight: float, spike_reg_weight: float, tokenizer: PreTrainedTokenizerBase, target_spike_rate: float = 0.02):
         super().__init__()
+        pad_id = tokenizer.pad_token_id
         self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
         self.weights = {'ce': ce_weight, 'spike_reg': spike_reg_weight}
         self.target_spike_rate = target_spike_rate
@@ -31,9 +34,10 @@ class CombinedLoss(nn.Module):
 
 class DistillationLoss(nn.Module):
     """知識蒸留のための損失関数。"""
-    def __init__(self, student_pad_id: int, ce_weight: float, distill_weight: float,
+    def __init__(self, tokenizer: PreTrainedTokenizerBase, ce_weight: float, distill_weight: float,
                  spike_reg_weight: float, temperature: float):
         super().__init__()
+        student_pad_id = tokenizer.pad_token_id
         self.temperature = temperature
         self.weights = {'ce': ce_weight, 'distill': distill_weight, 'spike_reg': spike_reg_weight}
         self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=student_pad_id if student_pad_id is not None else -100)

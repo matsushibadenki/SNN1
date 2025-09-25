@@ -7,6 +7,7 @@
 # - 学習用とアプリ用のコンテナを分離し、関心を分離。
 # - 独自Vocabularyを廃止し、Hugging Face Tokenizerに全面的に移行。
 # - トークナイザの読み込み元をdistillation設定から共通設定に変更。
+# - 損失関数にpad_idではなくtokenizerプロバイダを渡すように修正し、依存関係の解決を遅延させる。
 
 from dependency_injector import containers, providers
 from torch.optim import AdamW
@@ -30,7 +31,7 @@ class TrainingContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
 
     # --- トークナイザ ---
-    # 共通設定からトークナイザ名を読み込むように修正
+    # 共通設定からトークナイザ名を読み込む
     tokenizer = providers.Factory(
         AutoTokenizer.from_pretrained,
         pretrained_model_name_or_path=config.data.tokenizer_name
@@ -85,7 +86,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         CombinedLoss,
         ce_weight=config.training.loss.ce_weight,
         spike_reg_weight=config.training.loss.spike_reg_weight,
-        pad_id=tokenizer.provided.pad_token_id.optional(), # .optional() for cases where pad_token is None initially
+        tokenizer=tokenizer,
     )
     distillation_loss = providers.Factory(
         DistillationLoss,
@@ -93,7 +94,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         distill_weight=config.training.distillation.loss.distill_weight,
         spike_reg_weight=config.training.distillation.loss.spike_reg_weight,
         temperature=config.training.distillation.loss.temperature,
-        student_pad_id=tokenizer.provided.pad_token_id.optional(),
+        tokenizer=tokenizer,
     )
     
     # --- 蒸留用教師モデル ---

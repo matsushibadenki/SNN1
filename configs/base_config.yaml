@@ -3,7 +3,7 @@
 
 # 共通設定
 seed: 42
-device: "cuda"
+device: "mps" # デフォルトのデバイスを "mps" に変更
 
 # データ設定
 data:
@@ -11,7 +11,7 @@ data:
   format: "simple_text"
   split_ratio: 0.1 # 検証用データの割合
   max_vocab_size: 50000
-  tokenizer_name: "gpt2" # トークナイザのモデル名をここに定義
+  tokenizer_name: "gpt2"
 
 # 学習パラメータ設定
 training:
@@ -45,7 +45,7 @@ training:
 
 # 推論/アプリ設定
 inference:
-  device: "cuda"
+  device: "mps" # 推論デバイスも "mps" に変更
   max_len: 50
 
 # Gradioアプリ設定

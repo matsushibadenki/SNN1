@@ -6,6 +6,7 @@
 # - 検証データセットでモデル性能を評価する `evaluate` メソッドを実装。
 # - 検証結果に基づき、最も性能の良いモデルを `best_model.pth` として保存する機能を追加。
 # - GradScalerの非推奨警告を修正。
+# - チェックポイントの保存・読み込みロジックを修正し、バッファを除外して再開時のサイズミスマッチエラーを解消。
 
 import torch
 import torch.nn as nn
@@ -115,7 +116,11 @@ class BreakthroughTrainer:
 
     def save_checkpoint(self, path: str, epoch: int, metric_value: float, **kwargs: Any):
         if self.rank in [-1, 0]:
-            model_state = self.model.module.state_dict() if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model.state_dict()
+            model_to_save = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+            
+            # 状態(state)バッファを除いた、学習可能なパラメータのみを保存
+            model_state = {k: v for k, v in model_to_save.state_dict().items() if k not in model_to_save.buffers()}
+
             state = {
                 'epoch': epoch, 'model_state_dict': model_state, 
                 'optimizer_state_dict': self.optimizer.state_dict(),
@@ -145,7 +150,8 @@ class BreakthroughTrainer:
         checkpoint = torch.load(path, map_location=map_location)
         
         model_to_load = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-        model_to_load.load_state_dict(checkpoint['model_state_dict'])
+        # strict=Falseにすることで、チェックポイントに存在しないキー(バッファなど)があってもエラーにならない
+        model_to_load.load_state_dict(checkpoint['model_state_dict'], strict=False)
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
         if self.scheduler and 'scheduler_state_dict' in checkpoint:
@@ -156,7 +162,7 @@ class BreakthroughTrainer:
 
         self.best_metric = checkpoint.get('best_metric', float('inf'))
         start_epoch = checkpoint.get('epoch', 0)
-        print(f"✅ チェックポイント '{path}' を正常にロードしました。Epoch {start_epoch + 1} から学習を再開します。")
+        print(f"✅ チェックポイント '{path}' を正常にロードしました。Epoch {start_epoch} から学習を再開します。")
         return start_epoch
 
 

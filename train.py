@@ -2,6 +2,7 @@
 # DIコンテナを利用した、統合学習実行スクリプト (torchrun対応版)
 #
 # 変更点:
+# - チェックポイントをロードして学習を再開する機能を追加。
 # - torch.multiprocessing.spawn を廃止し、torchrun による起動に対応。
 # - RANKやWORLD_SIZEなどの分散学習設定を環境変数から自動で読み取るように変更。
 # - 分散学習のセットアップとクリーンアップ処理を関数に分離。
@@ -129,10 +130,18 @@ def main():
     trainer_args = {"model": model, "optimizer": optimizer, "scheduler": scheduler, "device": device, "rank": rank}
     trainer = container.distillation_trainer(**trainer_args) if is_distillation else container.standard_trainer(**trainer_args)
     
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    # チェックポイントファイルのパスを定義
+    checkpoint_path = os.path.join(container.config.training.log_dir(), "checkpoint.pth")
+    
+    # チェックポイントが存在すればロードする
+    start_epoch = trainer.load_checkpoint(checkpoint_path)
+    
     model_config = container.config.model.to_dict()
 
     if rank in [-1, 0]: print(f"\n🔥 {container.config.training.type()} 学習を開始します...")
-    for epoch in range(container.config.training.epochs()):
+    # 学習ループの開始エポックを修正
+    for epoch in range(start_epoch, container.config.training.epochs()):
         if is_distributed and sampler: sampler.set_epoch(epoch)
         metrics = trainer.train_epoch(dataloader, epoch)
         if rank in [-1, 0]:
@@ -140,16 +149,14 @@ def main():
             metrics_str = ", ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
             print(f"Epoch {epoch+1: >3}/{container.config.training.epochs()}: {metrics_str}, lr: {lr:.6f}")
             if (epoch + 1) % container.config.training.log_interval() == 0:
-                # evaluateを呼び出す場合、ここでもepochを渡す必要がある
-                # val_metrics = trainer.evaluate(val_dataloader, epoch)
-                # checkpoint保存時のメトリクスは別途定義が必要
                 trainer.save_checkpoint(
-                    path=os.path.join(container.config.training.log_dir(), "checkpoint.pth"),
-                    epoch=epoch,
-                    metric_value=metrics.get('total', float('inf')), # 仮にtotal lossを使用
+                    path=checkpoint_path,
+                    epoch=epoch + 1, # 次のエポックから再開するため+1する
+                    metric_value=metrics.get('total', float('inf')),
                     tokenizer_name=tokenizer.name_or_path, 
                     config=model_config
                 )
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if is_distributed:
         cleanup_distributed()

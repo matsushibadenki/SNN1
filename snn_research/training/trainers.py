@@ -118,8 +118,10 @@ class BreakthroughTrainer:
         if self.rank in [-1, 0]:
             model_to_save = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             
-            # 状態(state)バッファを除いた、学習可能なパラメータのみを保存
-            model_state = {k: v for k, v in model_to_save.state_dict().items() if k not in model_to_save.buffers()}
+            # 状態(state)バッファの名前を取得
+            buffer_names = {name for name, _ in model_to_save.named_buffers()}
+            # バッファを除いた、学習可能なパラメータのみを保存
+            model_state = {k: v for k, v in model_to_save.state_dict().items() if k not in buffer_names}
 
             state = {
                 'epoch': epoch, 'model_state_dict': model_state, 
@@ -138,7 +140,10 @@ class BreakthroughTrainer:
             if is_best:
                 self.best_metric = metric_value
                 best_path = os.path.join(os.path.dirname(path), 'best_model.pth')
-                shutil.copyfile(path, best_path)
+                # 保存する際は、パラメータのみのstateを渡す
+                temp_state_for_best = {'model_state_dict': model_state}
+                temp_state_for_best.update(kwargs)
+                torch.save(temp_state_for_best, best_path)
                 print(f"🏆 新しいベストモデルを '{best_path}' に保存しました (Metric: {metric_value:.4f})。")
 
     def load_checkpoint(self, path: str) -> int:
@@ -150,9 +155,22 @@ class BreakthroughTrainer:
         checkpoint = torch.load(path, map_location=map_location)
         
         model_to_load = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-        # strict=Falseにすることで、チェックポイントに存在しないキー(バッファなど)があってもエラーにならない
-        model_to_load.load_state_dict(checkpoint['model_state_dict'], strict=False)
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        # 古いチェックポイントがバッファを含んでいる可能性に対処
+        checkpoint_state_dict = checkpoint['model_state_dict']
+        model_buffer_names = {name for name, _ in model_to_load.named_buffers()}
+        keys_to_remove = [k for k in checkpoint_state_dict if k in model_buffer_names]
+        if keys_to_remove:
+            print(f"古いチェックポイントからバッファキーを削除します: {keys_to_remove}")
+            for k in keys_to_remove:
+                del checkpoint_state_dict[k]
+
+        # strict=Falseで、バッファがなくてもエラーにならないように読み込む
+        model_to_load.load_state_dict(checkpoint_state_dict, strict=False)
+        
+        # optimizerとschedulerの状態は、存在すれば読み込む
+        if 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
         if self.scheduler and 'scheduler_state_dict' in checkpoint:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])

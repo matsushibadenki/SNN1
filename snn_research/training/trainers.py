@@ -2,10 +2,10 @@
 # SNNモデルの学習と評価ループを管理するTrainerクラス (モニタリング・評価機能完備)
 # 
 # 機能:
+# - Metal (mps) デバイスに対応。
 # - TensorBoardと連携し、学習・検証のメトリクスをリアルタイムで可視化。
 # - 検証データセットでモデル性能を評価する `evaluate` メソッドを実装。
 # - 検証結果に基づき、最も性能の良いモデルを `best_model.pth` として保存する機能を追加。
-# - GradScalerの非推奨警告を修正。
 # - チェックポイントの保存・読み込みロジックを修正し、バッファを除外して再開時のサイズミスマッチエラーを解消。
 
 import torch
@@ -32,12 +32,12 @@ class BreakthroughTrainer:
         self.criterion = criterion
         self.grad_clip_norm = grad_clip_norm
         self.rank = rank
-        self.use_amp = use_amp and torch.cuda.is_available()
-        # 非推奨警告を修正
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp) if self.device == 'cuda' else torch.amp.GradScaler('cpu', enabled=self.use_amp)
-        self.best_metric = float('inf') # 損失を追跡するため、無限大で初期化
+        # mpsはGradScalerをサポートしないため、use_ampを無効化
+        self.use_amp = use_amp and self.device != 'mps'
         
-        # rank 0 のプロセスのみがTensorBoardの書き込みとコンソール出力を行う
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        self.best_metric = float('inf')
+        
         if self.rank in [-1, 0]:
             self.writer = SummaryWriter(log_dir)
             print(f"✅ TensorBoard logging enabled. Log directory: {log_dir}")
@@ -50,20 +50,27 @@ class BreakthroughTrainer:
 
         input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
         
-        with torch.set_grad_enabled(is_train):
-            with torch.cuda.amp.autocast(enabled=self.use_amp):
+        # mpsでもautocastは利用可能
+        with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
+            with torch.set_grad_enabled(is_train):
                 logits, spike_data = self.model(input_ids, return_spikes=True)
                 loss_dict = self.criterion(logits, target_ids, spike_data)
         
         if is_train:
             self.optimizer.zero_grad()
-            self.scaler.scale(loss_dict['total']).backward()
-            if self.grad_clip_norm > 0:
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        
+            if self.use_amp:
+                self.scaler.scale(loss_dict['total']).backward()
+                if self.grad_clip_norm > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss_dict['total'].backward()
+                if self.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.optimizer.step()
+
         with torch.no_grad():
             preds = torch.argmax(logits, dim=-1)
             if isinstance(self.criterion, CombinedLoss):
@@ -118,18 +125,18 @@ class BreakthroughTrainer:
         if self.rank in [-1, 0]:
             model_to_save = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             
-            # 状態(state)バッファの名前を取得
             buffer_names = {name for name, _ in model_to_save.named_buffers()}
-            # バッファを除いた、学習可能なパラメータのみを保存
             model_state = {k: v for k, v in model_to_save.state_dict().items() if k not in buffer_names}
 
             state = {
                 'epoch': epoch, 'model_state_dict': model_state, 
                 'optimizer_state_dict': self.optimizer.state_dict(),
-                'scaler_state_dict': self.scaler.state_dict(),
                 'best_metric': self.best_metric
             }
-            if self.scheduler: state['scheduler_state_dict'] = self.scheduler.state_dict()
+            if self.use_amp:
+                state['scaler_state_dict'] = self.scaler.state_dict()
+            if self.scheduler: 
+                state['scheduler_state_dict'] = self.scheduler.state_dict()
             state.update(kwargs)
             
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -140,7 +147,7 @@ class BreakthroughTrainer:
             if is_best:
                 self.best_metric = metric_value
                 best_path = os.path.join(os.path.dirname(path), 'best_model.pth')
-                # 保存する際は、パラメータのみのstateを渡す
+                
                 temp_state_for_best = {'model_state_dict': model_state}
                 temp_state_for_best.update(kwargs)
                 torch.save(temp_state_for_best, best_path)
@@ -151,12 +158,11 @@ class BreakthroughTrainer:
             print(f"⚠️ チェックポイントファイルが見つかりません: {path}。最初から学習を開始します。")
             return 0
             
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % self.rank} if self.rank != -1 else self.device
+        map_location = self.device
         checkpoint = torch.load(path, map_location=map_location)
         
         model_to_load = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         
-        # 古いチェックポイントがバッファを含んでいる可能性に対処
         checkpoint_state_dict = checkpoint['model_state_dict']
         model_buffer_names = {name for name, _ in model_to_load.named_buffers()}
         keys_to_remove = [k for k in checkpoint_state_dict if k in model_buffer_names]
@@ -165,10 +171,8 @@ class BreakthroughTrainer:
             for k in keys_to_remove:
                 del checkpoint_state_dict[k]
 
-        # strict=Falseで、バッファがなくてもエラーにならないように読み込む
         model_to_load.load_state_dict(checkpoint_state_dict, strict=False)
         
-        # optimizerとschedulerの状態は、存在すれば読み込む
         if 'optimizer_state_dict' in checkpoint:
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
@@ -192,8 +196,8 @@ class DistillationTrainer(BreakthroughTrainer):
             
         student_input, student_target, teacher_logits = [t.to(self.device) for t in batch]
 
-        with torch.set_grad_enabled(is_train):
-            with torch.cuda.amp.autocast(enabled=self.use_amp):
+        with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
+            with torch.set_grad_enabled(is_train):
                 student_logits, spike_data = self.model(student_input, return_spikes=True)
                 assert isinstance(self.criterion, DistillationLoss)
                 loss_dict = self.criterion(
@@ -205,11 +209,17 @@ class DistillationTrainer(BreakthroughTrainer):
         
         if is_train:
             self.optimizer.zero_grad()
-            self.scaler.scale(loss_dict['total']).backward()
-            if self.grad_clip_norm > 0:
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            if self.use_amp:
+                self.scaler.scale(loss_dict['total']).backward()
+                if self.grad_clip_norm > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss_dict['total'].backward()
+                if self.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.optimizer.step()
         
         return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}

@@ -2,12 +2,8 @@
 # DIコンテナを利用した、統合学習実行スクリプト (torchrun対応版)
 #
 # 変更点:
+# - Metal (mps) デバイスの可用性チェックをより堅牢にした。
 # - チェックポイントをロードして学習を再開する機能を追加。
-# - torch.multiprocessing.spawn を廃止し、torchrun による起動に対応。
-# - RANKやWORLD_SIZEなどの分散学習設定を環境変数から自動で読み取るように変更。
-# - 分散学習のセットアップとクリーンアップ処理を関数に分離。
-# - --distributed フラグを追加し、分散学習モードを明示的に指定するようにした。
-# - train_epochの呼び出しに epoch 引数を追加。
 
 import os
 import argparse
@@ -116,8 +112,10 @@ def main():
         device = f"cuda:{local_rank}"
     else:
         device = container.config.device()
-        if device == "cuda" and not torch.cuda.is_available(): device = "cpu"
-        if device == "mps" and not torch.backends.mps.is_available(): device = "cpu"
+        if device == "cuda" and not torch.cuda.is_available():
+            device = "mps" if torch.backends.mps.is_available() else "cpu"
+        elif device == "mps" and not torch.backends.mps.is_available():
+            device = "cpu"
     print(f"Process {rank if rank != -1 else 0}: Using device: {device}")
     
     model = container.snn_model().to(device)
@@ -130,17 +128,12 @@ def main():
     trainer_args = {"model": model, "optimizer": optimizer, "scheduler": scheduler, "device": device, "rank": rank}
     trainer = container.distillation_trainer(**trainer_args) if is_distillation else container.standard_trainer(**trainer_args)
     
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-    # チェックポイントファイルのパスを定義
     checkpoint_path = os.path.join(container.config.training.log_dir(), "checkpoint.pth")
-    
-    # チェックポイントが存在すればロードする
     start_epoch = trainer.load_checkpoint(checkpoint_path)
     
     model_config = container.config.model.to_dict()
 
     if rank in [-1, 0]: print(f"\n🔥 {container.config.training.type()} 学習を開始します...")
-    # 学習ループの開始エポックを修正
     for epoch in range(start_epoch, container.config.training.epochs()):
         if is_distributed and sampler: sampler.set_epoch(epoch)
         metrics = trainer.train_epoch(dataloader, epoch)
@@ -151,12 +144,11 @@ def main():
             if (epoch + 1) % container.config.training.log_interval() == 0:
                 trainer.save_checkpoint(
                     path=checkpoint_path,
-                    epoch=epoch + 1, # 次のエポックから再開するため+1する
+                    epoch=epoch + 1,
                     metric_value=metrics.get('total', float('inf')),
                     tokenizer_name=tokenizer.name_or_path, 
                     config=model_config
                 )
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     if is_distributed:
         cleanup_distributed()

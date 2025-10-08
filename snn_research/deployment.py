@@ -7,6 +7,7 @@
 # - `generate` メソッドをストリーミング応答（ジェネレータ）に変更し、逐次的なテキスト生成を可能に。
 # - `stop_sequences` のロジックを改善し、生成テキスト全体に含まれるかをチェックするようにした。
 # - 推論時の総スパイク数を計測し、インスタンス変数 `last_inference_stats` に保存する機能を追加。
+# - チェックポイントから'config'を安全に読み込み、モデルコンストラクタに不要な引数を渡さないように修正。
 
 import torch
 import torch.nn as nn
@@ -29,15 +30,25 @@ class SNNInferenceEngine:
 
         self.device = torch.device(device)
         checkpoint = torch.load(model_path, map_location=self.device)
-        
-        tokenizer_name = checkpoint['tokenizer_name']
+
+        tokenizer_name = checkpoint.get('tokenizer_name', 'gpt2') # フォールバックを追加
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-            
-        self.config: Dict[str, Any] = checkpoint['config']
-        
-        self.model = BreakthroughSNN(vocab_size=self.tokenizer.vocab_size, **self.config).to(self.device)
+
+        # モデル設定をチェックポイントから安全に取得
+        model_config = checkpoint.get('config')
+        if not isinstance(model_config, dict):
+            raise TypeError(f"チェックポイント内のモデル設定('config')が無効です。期待: dict, 実際: {type(model_config)}")
+        self.config: Dict[str, Any] = model_config
+
+        # BreakthroughSNNのコンストラクタが受け入れる引数のみをフィルタリング
+        expected_args = {
+            'd_model', 'd_state', 'num_layers', 'time_steps', 'n_head'
+        }
+        model_kwargs = {k: v for k, v in self.config.items() if k in expected_args}
+
+        self.model = BreakthroughSNN(vocab_size=self.tokenizer.vocab_size, **model_kwargs).to(self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.eval()
         self.last_inference_stats: Dict[str, Any] = {}
@@ -50,33 +61,33 @@ class SNNInferenceEngine:
 
         bos_token = self.tokenizer.bos_token or ''
         prompt_ids = self.tokenizer.encode(f"{bos_token}{start_text}", return_tensors='pt').to(self.device)
-        
+
         input_tensor = prompt_ids
         generated_text = ""
-        
+
         with torch.no_grad():
             for _ in range(max_len):
                 logits, hidden_states = self.model(input_tensor, return_spikes=True)
-                
+
                 if hidden_states.numel() > 0:
                     self.last_inference_stats["total_spikes"] += hidden_states.sum().item()
-                
+
                 next_token_logits = logits[:, -1, :]
                 next_token_id_tensor = torch.argmax(next_token_logits, dim=-1)
                 next_token_id = next_token_id_tensor.item()
-                
+
                 if next_token_id == self.tokenizer.eos_token_id:
                     break
 
                 new_token = self.tokenizer.decode([next_token_id])
                 generated_text += new_token
                 yield new_token
-                
+
                 if stop_sequences:
                     # 生成されたテキスト全体に停止シーケンスが含まれているかチェック
                     if any(stop_seq in generated_text for stop_seq in stop_sequences):
                         break
-                    
+
                 input_tensor = torch.cat([input_tensor, next_token_id_tensor.unsqueeze(0)], dim=1)
 
 
@@ -102,7 +113,7 @@ class AdaptiveQuantizationPruning:
         for module in model.modules():
             if isinstance(module, nn.Linear):
                 pass
-    
+
     def apply_quantization(self, model: nn.Module, bits: int) -> nn.Module:
         if bits >= 32: return model
         return model
@@ -153,4 +164,3 @@ class NeuromorphicDeploymentManager:
             'continual_learner': ContinualLearningEngine(optimized_model)
         }
         print(f"✅ デプロイメント完了: {name}")
-

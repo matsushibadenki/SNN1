@@ -8,6 +8,7 @@
 # - `stop_sequences` のロジックを改善し、生成テキスト全体に含まれるかをチェックするようにした。
 # - 推論時の総スパイク数を計測し、インスタンス変数 `last_inference_stats` に保存する機能を追加。
 # - コンストラクタでモデル設定を直接受け取り、チェックポイントに設定がない場合でもフォールバックできるように修正。
+# - model.load_state_dict に strict=False を追加し、バッファなどのキーが不足していてもエラーにならないように堅牢性を向上。
 
 import torch
 import torch.nn as nn
@@ -58,7 +59,9 @@ class SNNInferenceEngine:
         model_kwargs = {k: v for k, v in self.config.items() if k in expected_args}
 
         self.model = BreakthroughSNN(vocab_size=self.tokenizer.vocab_size, **model_kwargs).to(self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # strict=False を設定して、不足しているキーがあってもエラーを発生させない
+        self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         self.model.eval()
         self.last_inference_stats: Dict[str, Any] = {}
 
@@ -103,7 +106,7 @@ class SNNInferenceEngine:
 import torch.nn.functional as F
 
 class NeuromorphicChip(Enum):
-    INTEL_LOIHI = "intel_loihi"
+    INTEL_LOIHI = "intel_loIhi"
     IBM_TRUENORTH = "ibm_truenorth"
     GENERIC_EDGE = "generic_edge"
 

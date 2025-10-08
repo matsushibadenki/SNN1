@@ -8,10 +8,12 @@
 # - `stop_sequences` のロジックを改善し、生成テキスト全体に含まれるかをチェックするようにした。
 # - 推論時の総スパイク数を計測し、インスタンス変数 `last_inference_stats` に保存する機能を追加。
 # - コンストラクタでモデル設定を直接受け取り、チェックポイントに設定がない場合でもフォールバックできるように修正。
-# - model.load_state_dict に strict=False を追加し、バッファなどのキーが不足していてもエラーにならないように堅牢性を向上。
+# - model.load_state_dict に strict=False を追加し、堅牢性を向上。
+# - 生成ロジックをargmaxから、温度付きの多項分布サンプリングに変更し、出力の多様性を向上。
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import os
 import copy
 import time
@@ -37,13 +39,7 @@ class SNNInferenceEngine:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # 引数で渡されたモデル設定を優先し、なければチェックポイントから読み込む
-        final_model_config = None
-        if model_config and isinstance(model_config, dict):
-            final_model_config = model_config
-        else:
-            final_model_config = checkpoint.get('config')
-
+        final_model_config = model_config or checkpoint.get('config')
         if not isinstance(final_model_config, dict):
             raise TypeError(
                 "モデル設定(config)が見つかりません。"
@@ -52,25 +48,19 @@ class SNNInferenceEngine:
             )
         self.config: Dict[str, Any] = final_model_config
 
-        # BreakthroughSNNのコンストラクタが受け入れる引数のみをフィルタリング
-        expected_args = {
-            'd_model', 'd_state', 'num_layers', 'time_steps', 'n_head'
-        }
+        expected_args = {'d_model', 'd_state', 'num_layers', 'time_steps', 'n_head'}
         model_kwargs = {k: v for k, v in self.config.items() if k in expected_args}
 
         self.model = BreakthroughSNN(vocab_size=self.tokenizer.vocab_size, **model_kwargs).to(self.device)
-        
-        # strict=False を設定して、不足しているキーがあってもエラーを発生させない
         self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         self.model.eval()
         self.last_inference_stats: Dict[str, Any] = {}
 
-    def generate(self, start_text: str, max_len: int, stop_sequences: Optional[List[str]] = None) -> Iterator[str]:
+    def generate(self, start_text: str, max_len: int, stop_sequences: Optional[List[str]] = None, temperature: float = 0.8) -> Iterator[str]:
         """
         テキストをストリーミング形式で生成します。
         """
         self.last_inference_stats = {"total_spikes": 0}
-
         bos_token = self.tokenizer.bos_token or ''
         prompt_ids = self.tokenizer.encode(f"{bos_token}{start_text}", return_tensors='pt').to(self.device)
 
@@ -80,14 +70,20 @@ class SNNInferenceEngine:
         with torch.no_grad():
             for _ in range(max_len):
                 logits, hidden_states = self.model(input_tensor, return_spikes=True)
-
                 if hidden_states.numel() > 0:
                     self.last_inference_stats["total_spikes"] += hidden_states.sum().item()
 
+                # --- 生成ロジックの改善 ---
                 next_token_logits = logits[:, -1, :]
-                next_token_id_tensor = torch.argmax(next_token_logits, dim=-1)
-                next_token_id = next_token_id_tensor.item()
+                # 温度を適用して確率分布をなめらかにする
+                scaled_logits = next_token_logits / temperature
+                # 確率分布を計算
+                probs = F.softmax(scaled_logits, dim=-1)
+                # 多項分布からサンプリングして次のトークンを決定
+                next_token_id_tensor = torch.multinomial(probs, num_samples=1)
+                # -------------------------
 
+                next_token_id = next_token_id_tensor.item()
                 if next_token_id == self.tokenizer.eos_token_id:
                     break
 
@@ -95,18 +91,15 @@ class SNNInferenceEngine:
                 generated_text += new_token
                 yield new_token
 
-                if stop_sequences:
-                    if any(stop_seq in generated_text for stop_seq in stop_sequences):
-                        break
+                if stop_sequences and any(stop_seq in generated_text for stop_seq in stop_sequences):
+                    break
 
-                input_tensor = torch.cat([input_tensor, next_token_id_tensor.unsqueeze(0)], dim=1)
+                input_tensor = torch.cat([input_tensor, next_token_id_tensor], dim=1)
 
 
-# --- ニューロモーフィック デプロイメント機能 ---
-import torch.nn.functional as F
-
+# --- (以下、変更なし) ---
 class NeuromorphicChip(Enum):
-    INTEL_LOIHI = "intel_loIhi"
+    INTEL_LOIHI = "intel_loihi"
     IBM_TRUENORTH = "ibm_truenorth"
     GENERIC_EDGE = "generic_edge"
 

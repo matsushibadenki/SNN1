@@ -7,7 +7,7 @@
 # - `generate` メソッドをストリーミング応答（ジェネレータ）に変更し、逐次的なテキスト生成を可能に。
 # - `stop_sequences` のロジックを改善し、生成テキスト全体に含まれるかをチェックするようにした。
 # - 推論時の総スパイク数を計測し、インスタンス変数 `last_inference_stats` に保存する機能を追加。
-# - チェックポイントから'config'を安全に読み込み、モデルコンストラクタに不要な引数を渡さないように修正。
+# - コンストラクタでモデル設定を直接受け取り、チェックポイントに設定がない場合でもフォールバックできるように修正。
 
 import torch
 import torch.nn as nn
@@ -22,7 +22,7 @@ from transformers import AutoTokenizer
 # --- SNN 推論エンジン ---
 class SNNInferenceEngine:
     """SNNモデルでテキスト生成を行う推論エンジン"""
-    def __init__(self, model_path: str, device: str):
+    def __init__(self, model_path: str, device: str, model_config: Optional[Dict[str, Any]] = None):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"モデルファイルが見つかりません: {model_path}")
 
@@ -31,16 +31,25 @@ class SNNInferenceEngine:
         self.device = torch.device(device)
         checkpoint = torch.load(model_path, map_location=self.device)
 
-        tokenizer_name = checkpoint.get('tokenizer_name', 'gpt2') # フォールバックを追加
+        tokenizer_name = checkpoint.get('tokenizer_name', 'gpt2')
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # モデル設定をチェックポイントから安全に取得
-        model_config = checkpoint.get('config')
-        if not isinstance(model_config, dict):
-            raise TypeError(f"チェックポイント内のモデル設定('config')が無効です。期待: dict, 実際: {type(model_config)}")
-        self.config: Dict[str, Any] = model_config
+        # 引数で渡されたモデル設定を優先し、なければチェックポイントから読み込む
+        final_model_config = None
+        if model_config and isinstance(model_config, dict):
+            final_model_config = model_config
+        else:
+            final_model_config = checkpoint.get('config')
+
+        if not isinstance(final_model_config, dict):
+            raise TypeError(
+                "モデル設定(config)が見つかりません。"
+                "アプリケーション起動時に --model_config で正しいYAMLファイルを指定するか、"
+                "設定情報が含まれたモデルファイルを使用してください。"
+            )
+        self.config: Dict[str, Any] = final_model_config
 
         # BreakthroughSNNのコンストラクタが受け入れる引数のみをフィルタリング
         expected_args = {
@@ -84,7 +93,6 @@ class SNNInferenceEngine:
                 yield new_token
 
                 if stop_sequences:
-                    # 生成されたテキスト全体に停止シーケンスが含まれているかチェック
                     if any(stop_seq in generated_text for stop_seq in stop_sequences):
                         break
 

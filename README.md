@@ -69,9 +69,10 @@ chmod \+x scripts/run\_distributed\_training.sh
 学習済みのモデルを使って、GradioベースのチャットUIを起動します。**学習時に使用したモデル設定ファイルを指定してください。**
 
 \# 例: mediumモデルを起動  
-python \-m app.main \\  
+python -m app.main \
     \--config configs/base\_config.yaml \\  
-    \--model\_config configs/models/medium.yaml
+    \--model\_config configs/models/medium.yaml \\  
+    \--model_path runs/snn_experiment/best_model.pth
 
 http://0.0.0.0:7860 を開いてください。
 

@@ -10,6 +10,7 @@
 # - 損失関数にpad_idではなくtokenizerプロバイダを渡すように修正し、依存関係の解決を遅延させる。
 # - スケジューラの依存関係問題を解決するため、メソッドから独立した関数ファクトリにリファクタリング。
 # - Trainerの定義にuse_ampとlog_dirを追加。
+# - SNNInferenceEngineにモデル設定を直接渡すように修正。
 
 from dependency_injector import containers, providers
 from torch.optim import AdamW, Optimizer
@@ -136,6 +137,8 @@ class AppContainer(containers.DeclarativeContainer):
         SNNInferenceEngine,
         model_path=config.model.path,
         device=config.inference.device,
+        # YAMLから読み込んだモデル設定を直接コンストラクタに渡す
+        model_config=config.model,
     )
     
     # --- サービス ---
